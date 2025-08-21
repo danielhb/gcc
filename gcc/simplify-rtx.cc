@@ -37,6 +37,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "selftest-rtl.h"
 #include "rtx-vector-builder.h"
 #include "rtlanal.h"
+#include "tm_p.h"
 
 /* Simplification and canonicalization of RTL.  */
 
@@ -7359,6 +7360,131 @@ simplify_context::simplify_merge_mask (rtx x, rtx mask, int op)
   return NULL_RTX;
 }
 
+/* This helper aims to simplify the logic of simplify_cond_eqz_nez
+   by doing preprocessing of the 'on_nonzero' arm.
+
+   We can ignore extensions on the ON_NONZERO term for the
+   purposes of analysis.  So strip them away to simplify
+   the logic below.  However, we need a copy of the original
+   ON_NONZERO value for the return value.  So save that
+   for future use.  */
+static rtx
+simplify_cond_eqz_nez_precondition (rtx on_nonzero)
+{
+  if (GET_CODE (on_nonzero) == SIGN_EXTEND
+      || GET_CODE (on_nonzero) == ZERO_EXTEND)
+    on_nonzero = XEXP (on_nonzero, 0);
+
+  /* Similarly, but where the extensions are implemented as shift
+     pairs.  Within combine the two shift form is common via
+     expand_compound_operation and friends.  */
+  if ((GET_CODE (on_nonzero) == ASHIFTRT
+       || GET_CODE (on_nonzero) == LSHIFTRT)
+      && GET_CODE (XEXP (on_nonzero, 0)) == ASHIFT
+      && CONST_INT_P (XEXP (on_nonzero, 1))
+      && XEXP (on_nonzero, 1) == XEXP (XEXP (on_nonzero, 0), 1))
+    {
+      on_nonzero = XEXP (XEXP (on_nonzero, 0), 0);
+
+      /* Often ON_NONZERO will be a SUBREG at this point.  Strip
+	 it if possible.  */
+      if (SUBREG_P (on_nonzero) && subreg_lowpart_p (on_nonzero))
+	on_nonzero = SUBREG_REG (on_nonzero);
+    }
+
+  /* And finally, strip away zero extension implemented with AND.  */
+  if (GET_CODE (on_nonzero) == AND
+      && !register_operand (XEXP (on_nonzero, 0), VOIDmode)
+      && CONST_INT_P (XEXP (on_nonzero, 1))
+      && exact_log2 (INTVAL (XEXP (on_nonzero, 1)) + 1) >= 0
+      && INTVAL (XEXP (on_nonzero, 1)) <= 0x7fffffff)
+    {
+      on_nonzero = XEXP (XEXP (on_nonzero, 0), 0);
+
+      /* Often ON_NONZERO will be a SUBREG at this point.  Strip
+	 it if possible.  */
+      if (SUBREG_P (on_nonzero) && subreg_lowpart_p (on_nonzero))
+	on_nonzero = SUBREG_REG (on_nonzero);
+    }
+
+  return on_nonzero;
+}
+
+/* Returns true if both rtx1 and rtx2 are registers with
+   the same REGNO.  If a SUBREG is provided, use the REGNO
+   of the nested reg.  */
+static bool
+rtx_are_regs_same_regno(rtx rtx1, rtx rtx2)
+{
+  if (!register_operand (rtx1, VOIDmode)
+      || !register_operand (rtx2, VOIDmode))
+    return false;
+
+  if (SUBREG_P (rtx1) && subreg_lowpart_p (rtx1))
+    rtx1 = SUBREG_REG (rtx1);
+
+  if (SUBREG_P (rtx2) && subreg_lowpart_p (rtx2))
+    rtx2 = SUBREG_REG (rtx2);
+
+  return REGNO (rtx1) == REGNO (rtx2);
+}
+
+/* Recognize expressions of the form
+
+  (X EQ 0) ? 0 : FN (X), where FN (0) = 0
+
+  (X NE 0) ? FN (X) : 0, where FN (0) = 0
+
+  And try to simplify it to FN (X).
+*/
+rtx
+simplify_context::simplify_cond_eqz_nez (rtx op0, rtx op1, rtx op2)
+{
+  rtx on_zero, on_nonzero;
+
+  if (GET_CODE (op0) == EQ)
+    {
+      on_zero = op1;
+      on_nonzero = op2;
+    }
+  else
+    {
+      on_zero = op2;
+      on_nonzero = op1;
+    }
+
+  if (!REG_P (XEXP (op0, 0)))
+    return NULL_RTX;
+
+  if (!(CONST_INT_P (on_zero) && INTVAL (on_zero) == 0))
+    return NULL_RTX;
+
+  rtx op0_x = XEXP (op0, 0);
+  rtx orig_on_nonzero = on_nonzero;
+
+  on_nonzero = simplify_cond_eqz_nez_precondition (on_nonzero);
+
+  /* There's a chance we ended up with a reg in 'on_nonzero'
+     after precondition processing (from a SIGN_EXTEND).  */
+  if (register_operand (on_nonzero, VOIDmode))
+    return NULL_RTX;
+
+  if ((GET_CODE (on_nonzero) == POPCOUNT
+       || GET_CODE (on_nonzero) == ASHIFT
+       || GET_CODE (on_nonzero) == ASHIFTRT
+       || GET_CODE (on_nonzero) == LSHIFTRT)
+      && rtx_are_regs_same_regno (op0_x, XEXP (on_nonzero, 0)))
+    return orig_on_nonzero;
+
+  if ((GET_CODE (on_nonzero) == MULT
+       || GET_CODE (on_nonzero) == AND)
+      && (rtx_are_regs_same_regno (op0_x, XEXP (on_nonzero, 0))
+	  || rtx_are_regs_same_regno (op0_x, XEXP (on_nonzero, 1))))
+    return orig_on_nonzero;
+
+  return NULL_RTX;
+}
+
 
 /* Simplify CODE, an operation with result mode MODE and three operands,
    OP0, OP1, and OP2.  OP0_MODE was the mode of OP0 before it became
@@ -7573,6 +7699,17 @@ simplify_context::simplify_ternary_operation (rtx_code code, machine_mode mode,
 	      else if (temp)
 	        return gen_rtx_IF_THEN_ELSE (mode, temp, op1, op2);
 	    }
+	}
+
+      /* Convert x == 0 ? 0 : FN (x)" and "x != 0 ? FN (x) : 0"
+	 to "FN (x)" when FN (0) = 0.  */
+      if (COMPARISON_P (op0) && !side_effects_p (op0)
+	  && (GET_CODE (op0) == EQ || GET_CODE (op0) == NE)
+	  && CONST_INT_P (XEXP (op0, 1)) && INTVAL (XEXP (op0, 1)) == 0)
+	{
+	  rtx simplified = simplify_cond_eqz_nez (op0, op1, op2);
+	  if (simplified)
+	    return simplified;
 	}
       break;
 
@@ -9127,6 +9264,138 @@ test_comparisons (machine_mode mode0, machine_mode mode1, machine_mode mode2)
 	}
 }
 
+static void
+test_ternary_czero_cond (rtx cond_reg, rtx expected)
+{
+  rtx condEQ = gen_rtx_EQ (DImode, cond_reg, const0_rtx);
+  rtx condNE = gen_rtx_NE (DImode, cond_reg, const0_rtx);
+  rtx if_then_else = gen_rtx_IF_THEN_ELSE (DImode, condEQ,
+					   const0_rtx, expected);
+
+  rtx ret = simplify_ternary_operation (GET_CODE (if_then_else),
+					DImode, DImode,
+					XEXP (if_then_else, 0),
+					XEXP (if_then_else, 1),
+					XEXP (if_then_else, 2));
+  ASSERT_RTX_EQ (expected, ret);
+
+  if_then_else = gen_rtx_IF_THEN_ELSE (DImode, condNE,
+				       expected, const0_rtx);
+  ret = simplify_ternary_operation (GET_CODE (if_then_else),
+				    DImode, DImode,
+				    XEXP (if_then_else, 0),
+				    XEXP (if_then_else, 1),
+				    XEXP (if_then_else, 2));
+  ASSERT_RTX_EQ (expected, ret);
+}
+
+static void
+test_ternary_czero_popcount ()
+{
+  rtx regX = make_test_reg (DImode);
+
+  rtx popc = gen_rtx_POPCOUNT (DImode, regX);
+  test_ternary_czero_cond (regX, popc);
+
+  rtx subreg_popc = gen_rtx_SUBREG (DImode, popc, 0);
+  rtx and_rtx = gen_rtx_AND(DImode, subreg_popc,
+			    gen_rtx_CONST_INT (DImode, 127));
+  test_ternary_czero_cond (regX, and_rtx);
+
+  rtx subreg_regX = gen_rtx_SUBREG (DImode, regX, 0);
+  popc = gen_rtx_POPCOUNT (DImode, subreg_regX);
+  subreg_popc = gen_rtx_SUBREG (DImode, popc, 0);
+  and_rtx = gen_rtx_AND (DImode, subreg_popc,
+			 gen_rtx_CONST_INT(DImode, 127));
+  test_ternary_czero_cond (regX, and_rtx);
+}
+
+static void
+test_ternary_czero_mult_and ()
+{
+  rtx regX = make_test_reg (DImode);
+  rtx regY = make_test_reg (DImode);
+
+  rtx and_rtx = gen_rtx_AND (DImode, regX, regY);
+  test_ternary_czero_cond (regX, and_rtx);
+
+  and_rtx = gen_rtx_AND (DImode, regY, regX);
+  test_ternary_czero_cond (regX, and_rtx);
+
+  rtx mult = gen_rtx_MULT (DImode, regX, regY);
+  test_ternary_czero_cond (regX, mult);
+
+  mult = gen_rtx_MULT (DImode, regY, regX);
+  test_ternary_czero_cond (regX, mult);
+
+  /* MULT pattern with sign_extend and reg/subregs */
+
+  mult = gen_rtx_SIGN_EXTEND (DImode, gen_rtx_MULT (DImode, regX, regY));
+  test_ternary_czero_cond (regX, mult);
+
+  mult = gen_rtx_SIGN_EXTEND (DImode, gen_rtx_MULT (DImode, regY, regX));
+  test_ternary_czero_cond (regX, mult);
+
+  rtx subreg_x = gen_rtx_SUBREG (DImode, regX, 0);
+  rtx subreg_y = gen_rtx_SUBREG (DImode, regX, 0);
+
+  mult = gen_rtx_SIGN_EXTEND (DImode,
+			      gen_rtx_MULT (DImode, subreg_x, subreg_y));
+  test_ternary_czero_cond (regX, mult);
+
+  mult = gen_rtx_SIGN_EXTEND (DImode,
+			      gen_rtx_MULT (DImode, subreg_y, subreg_x));
+  test_ternary_czero_cond (regX, mult);
+}
+
+static void
+test_ternary_czero_bitops ()
+{
+  rtx regX = make_test_reg (DImode);
+  rtx regY = make_test_reg (DImode);
+
+  rtx ashift = gen_rtx_ASHIFT (DImode, regX, regY);
+  test_ternary_czero_cond (regX, ashift);
+  test_ternary_czero_cond (regX, gen_rtx_SIGN_EXTEND (DImode, ashift));
+  test_ternary_czero_cond (regX, gen_rtx_ZERO_EXTEND (DImode, ashift));
+
+  ashift = gen_rtx_ASHIFT (DImode,
+			   gen_rtx_SUBREG (DImode, regX, 0),
+			   gen_rtx_SUBREG (DImode, regY, 0));
+  test_ternary_czero_cond (regX, gen_rtx_SIGN_EXTEND (DImode, ashift));
+  test_ternary_czero_cond (regX, gen_rtx_ZERO_EXTEND (DImode, ashift));
+
+  rtx ashiftrt = gen_rtx_ASHIFTRT (DImode, regX, regY);
+  test_ternary_czero_cond (regX, ashiftrt);
+  test_ternary_czero_cond (regX, gen_rtx_SIGN_EXTEND (DImode, ashiftrt));
+  test_ternary_czero_cond (regX, gen_rtx_ZERO_EXTEND (DImode, ashiftrt));
+
+  ashiftrt = gen_rtx_ASHIFTRT (DImode,
+			       gen_rtx_SUBREG (DImode, regX, 0),
+			       gen_rtx_SUBREG (DImode, regY, 0));
+  test_ternary_czero_cond (regX, gen_rtx_SIGN_EXTEND (DImode, ashiftrt));
+  test_ternary_czero_cond (regX, gen_rtx_ZERO_EXTEND (DImode, ashiftrt));
+
+  rtx lshiftrt = gen_rtx_LSHIFTRT (DImode, regX, regY);
+  test_ternary_czero_cond (regX, lshiftrt);
+  test_ternary_czero_cond (regX, gen_rtx_SIGN_EXTEND (DImode, lshiftrt));
+  test_ternary_czero_cond (regX, gen_rtx_ZERO_EXTEND (DImode, lshiftrt));
+
+  lshiftrt = gen_rtx_LSHIFTRT (DImode,
+			       gen_rtx_SUBREG (DImode, regX, 0),
+			       gen_rtx_SUBREG (DImode, regY, 0));
+  test_ternary_czero_cond (regX, gen_rtx_SIGN_EXTEND (DImode, lshiftrt));
+  test_ternary_czero_cond (regX, gen_rtx_ZERO_EXTEND (DImode, lshiftrt));
+}
+
+static void
+test_ternary_czero_ops ()
+{
+  test_ternary_czero_popcount ();
+  test_ternary_czero_mult_and ();
+  test_ternary_czero_bitops ();
+}
+
 
 /* Verify some simplifications involving scalar expressions.  */
 
@@ -9153,6 +9422,7 @@ test_scalar_ops ()
   test_scalar_int_ext_ops2 (DImode, SImode, HImode);
 
   test_comparisons (QImode, HImode, SImode);
+  test_ternary_czero_ops ();
 }
 
 /* Test vector simplifications involving VEC_DUPLICATE in which the

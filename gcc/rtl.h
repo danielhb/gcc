@@ -3536,6 +3536,7 @@ private:
   rtx simplify_shift_const_int (rtx_code, machine_mode, rtx, unsigned int);
   rtx simplify_plus_minus (rtx_code, machine_mode, rtx, rtx);
   rtx simplify_cond_clz_ctz (rtx, rtx_code, rtx, rtx);
+  rtx simplify_cond_eqz_nez (rtx, rtx, rtx);
 
   rtx simplify_unary_operation_1 (rtx_code, machine_mode, rtx);
   rtx simplify_binary_operation_1 (rtx_code, machine_mode, rtx, rtx, rtx, rtx);
