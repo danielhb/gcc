@@ -2703,6 +2703,172 @@ cond_removal_in_builtin_zero_pattern (basic_block cond_bb,
   return true;
 }
 
+/* Check if a BB has a single assignment or a single assignment
+   and a GOTO.  Return the gimple assignment or NULL if
+   the BB does not match the criteria.  */
+
+static gimple*
+block_has_single_assignment (basic_block bb)
+{
+  gimple_stmt_iterator gsi = gsi_start_nondebug_after_labels_bb (bb);
+  gimple *stmt = gsi_stmt (gsi);
+
+  if (!stmt || !is_gimple_assign (stmt))
+    return NULL;
+
+  gsi = gsi_last_nondebug_bb (bb);
+  gimple *last_stmt = gsi_stmt (gsi);
+
+  if (!last_stmt)
+    return NULL;
+
+  if (gimple_code (last_stmt) == GIMPLE_GOTO)
+    {
+      gsi_prev (&gsi);
+      last_stmt = gsi_stmt (gsi);
+    }
+
+  if (last_stmt != stmt)
+    return NULL;
+
+  return stmt;
+}
+
+/* Optimize the case where we have a bitmask check and
+   a bitmask set/clear of the same mask, making the
+   set/clear unconditional.  E.g for a bitmask set case:
+
+   _1 = flags_3 & bitmask;
+   if (_1 == 0)
+     goto <bb 3>; [INV]
+   else
+     goto <bb 4>; [INV]
+
+   ;;   basic block 3, loop depth 0, maybe hot
+   flags_4 = flags_3 | bitmask;
+   ;;    succ:       4 (FALLTHRU,EXECUTABLE)
+
+   ;;   basic block 4, loop depth 0, maybe hot
+   # flags_2 = PHI <flags_3, flags_4>
+
+   We'll make the gcond always true, always setting the
+   bitmask.  The gcond disappears, and the BIT_AND op
+   used by it also goes away if it's not being used elsewhere.
+
+   Likewise for the bitmask clear case.  */
+
+static bool
+cond_removal_mispredict_bitop (basic_block cond_bb,
+			       basic_block middle_bb,
+			       tree arg0, tree arg1)
+{
+  /* Check if the middle_bb has a single stmt or a
+     single stmt + a goto.  */
+  gimple *mid_stmt = block_has_single_assignment (middle_bb);
+  if (!mid_stmt)
+    return false;
+
+  /* mid_stmt constraints:
+     - Must be either an IOR or an AND;
+     - RHS1 is a SSA_NAME with integral type.  */
+  if (gimple_assign_rhs_class (mid_stmt) != GIMPLE_BINARY_RHS)
+    return false;
+
+  tree rhs1 = gimple_assign_rhs1 (mid_stmt);
+  if (TREE_CODE (rhs1) != SSA_NAME
+      || !INTEGRAL_TYPE_P (TREE_TYPE (rhs1)))
+    return false;
+
+  tree_code mid_code = gimple_assign_rhs_code (mid_stmt);
+  if (mid_code != BIT_AND_EXPR && mid_code != BIT_IOR_EXPR)
+    return false;
+
+  if (arg0 != gimple_assign_lhs (mid_stmt)
+      || arg1 != gimple_assign_rhs1 (mid_stmt))
+    return false;
+
+  /* 'cond' must be the format: SSA_NAME EQ|NE integer_zerop,
+     where cond_code varies with mid_stmt OP:
+
+     - SSA_NAME == 0  and mid_stmt = BIT_AND;
+     - SSA_NAME != 0  and mid_stmt = BIT_IOR.
+
+     We're assuming that SSA_NAME is a suitable BIT_AND
+     for now.  */
+  gcond *cond = safe_dyn_cast <gcond *> (*gsi_last_bb (cond_bb));
+  if (!cond)
+    return false;
+
+  if (TREE_CODE (gimple_cond_lhs (cond)) != SSA_NAME
+      || !integer_zerop (gimple_cond_rhs (cond)))
+    return false;
+
+  tree_code cond_code = gimple_cond_code (cond);
+  if (cond_code != EQ_EXPR && cond_code != NE_EXPR)
+    return false;
+
+  if ((cond_code == NE_EXPR && mid_code != BIT_AND_EXPR)
+      || (cond_code == EQ_EXPR && mid_code != BIT_IOR_EXPR))
+    return false;
+
+  gimple *cond_stmt = SSA_NAME_DEF_STMT (gimple_cond_lhs (cond));
+  if (!cond_stmt || !is_gimple_assign (cond_stmt)
+      || gimple_assign_rhs_class (cond_stmt) != GIMPLE_BINARY_RHS
+      || gimple_assign_rhs_code (cond_stmt) != BIT_AND_EXPR)
+    return false;
+
+  /* RHS1 for both cond_stmt and mid_stmt must be the same.
+     RHS2 will depend of what we're trying to map.  For a
+     "check if set, if not set it":
+
+     _1 = SSA_NAME & imm
+     if (_1 == 0) goto 3 else goto 4
+     3:  _4 = SSA_NAME | imm
+	(fallthrough to 4)
+
+     RHS2 must be the same for both.  However for a "if set, clear it"
+     case:
+
+     _1 = SSA_NAME & imm
+     if (_1 != 0) goto 3 else goto 4
+     3:  _4 = SSA_NAME & (mask ~imm)
+	(fallthrough to 4)
+
+     mid_stmt RHS2 must clear 'imm', meaning that it must be a
+     mask format.  Both RHS2 must also be INTEGER_CST.  */
+  if (gimple_assign_rhs1 (cond_stmt) != gimple_assign_rhs1 (mid_stmt))
+    return false;
+
+  if (mid_code == BIT_IOR_EXPR
+      &&  gimple_assign_rhs2 (cond_stmt) != gimple_assign_rhs2 (mid_stmt))
+    return false;
+  else if (mid_code == BIT_AND_EXPR)
+    {
+      tree cond_stmt_imm = gimple_assign_rhs2 (cond_stmt);
+      tree mid_stmt_imm = gimple_assign_rhs2 (mid_stmt);
+
+      if (TREE_CODE (cond_stmt_imm) != INTEGER_CST
+	  || TREE_CODE (mid_stmt_imm) != INTEGER_CST)
+	return false;
+
+      wide_int cond_imm = wi::to_wide (cond_stmt_imm);
+      wide_int mid_imm = wi::to_wide (mid_stmt_imm);
+
+      if (!wi::ltu_p (cond_imm, mid_imm)
+	  || wi::ne_p (mid_imm, wi::bit_not (cond_imm)))
+	return false;
+    }
+
+  /* Finally set 'cond' to always execute mid_stmt.  */
+  edge e = single_pred_edge (middle_bb);
+  if (e->flags & EDGE_TRUE_VALUE)
+    gimple_cond_make_true (cond);
+  else
+    gimple_cond_make_false (cond);
+
+  return true;
+}
+
 /* Auxiliary functions to determine the set of memory accesses which
    can't trap because they are preceded by accesses to the same memory
    portion.  We do that for MEM_REFs, so we only need to track
@@ -4072,6 +4238,10 @@ pass_phiopt::execute (function *)
       else if (single_pred_p (bb1)
 	       && !diamond_p
 	       && spaceship_replacement (bb, bb1, e1, e2, phi, arg0, arg1))
+	cfgchanged = true;
+      else if (single_pred_p (bb1)
+	       && !diamond_p
+	       && cond_removal_mispredict_bitop (bb, bb1, arg0, arg1))
 	cfgchanged = true;
     };
 
