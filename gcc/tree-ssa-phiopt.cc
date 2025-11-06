@@ -2703,6 +2703,186 @@ cond_removal_in_builtin_zero_pattern (basic_block cond_bb,
   return true;
 }
 
+static bool
+move_conditional_ops (edge e1, edge e2, gphi *phi,
+		      gimple *op1_stmt,
+		      unsigned HOST_WIDE_INT result_imm)
+{
+  if (!dbg_cnt (phiopt_cond_ops))
+    return false;
+
+  tree immediate_type = TREE_TYPE (gimple_assign_rhs2 (op1_stmt));
+
+  /* Re-using the existing phi to re-create the immediate depends
+     on the phi type being the same type as the immediate.  Re-using
+     the phi also means that any existing flow info (like range) attached
+     to it needs to be cleared since we're changing the phi semantics.
+
+     In short, just create a new phi.  */
+  tree new_phi_res = make_ssa_name (immediate_type, NULL);
+  gphi *new_phi = create_phi_node (new_phi_res, phi->bb);
+
+  /* e1 edge, i.e. the edge from middle_bb to merge_bb, always
+     re-create the immediate.  e2 will not re-create it.  */
+  SET_PHI_ARG_DEF (new_phi, e1->dest_idx,
+		   wide_int_to_tree (immediate_type, 1));
+  SET_PHI_ARG_DEF (new_phi, e2->dest_idx,
+		   wide_int_to_tree (immediate_type, 0));
+
+  gimple_stmt_iterator gsi, gsi_from;
+
+  /* The result_stmt is a LSHIFT that will receive the new phi
+     result 0/1 to re-create the immediate.  */
+  tree lshift = make_ssa_name (immediate_type);
+  tree result_imm_tree = wide_int_to_tree (immediate_type, result_imm);
+  gimple *result_stmt = gimple_build_assign (lshift, LSHIFT_EXPR, new_phi_res,
+					     result_imm_tree);
+  SSA_NAME_DEF_STMT (lshift) = result_stmt;
+
+  gsi = gsi_start_nondebug_after_labels_bb (phi->bb);
+  gsi_insert_before (&gsi, result_stmt, GSI_SAME_STMT);
+
+  /* op1_stmt handling:
+    - rhs2 must be changed to LHS (result_stmt)
+    - must be placed after result_stmt.  */
+  gsi_from = gsi_for_stmt (op1_stmt);
+  gsi = gsi_for_stmt (result_stmt);
+  gsi_move_after (&gsi_from, &gsi);
+
+  tree new_rhs2 = gimple_assign_lhs (result_stmt);
+  gimple_assign_set_rhs2 (op1_stmt, new_rhs2);
+
+  update_stmt (op1_stmt);
+  reset_flow_sensitive_info (gimple_assign_lhs (op1_stmt));
+
+  /* We'll have to replace all phi_res instances.  Ideally
+     we could just use op1_stmt LHS, but create a new var
+     with phi_res type and use it instead.  */
+  tree phi_res = gimple_phi_result (phi);
+  tree phi_type = TREE_TYPE (phi_res);
+  tree phi_replace = make_ssa_name (phi_type, NULL);
+  gassign *cast_stmt = gimple_build_assign (phi_replace, NOP_EXPR,
+					    gimple_get_lhs (op1_stmt));
+  SSA_NAME_DEF_STMT (phi_replace) = cast_stmt;
+
+  gsi = gsi_for_stmt (op1_stmt);
+  gsi_insert_after (&gsi, cast_stmt, GSI_SAME_STMT);
+
+  /* Replace all uses of the old phi result with gphi_replace,
+     skipping any debug stmts and result_stmt itself.  */
+  gimple *stmt;
+  use_operand_p use_p;
+  imm_use_iterator iterator;
+  FOR_EACH_IMM_USE_STMT (stmt, iterator, phi_res)
+    {
+      if (is_gimple_debug (stmt))
+	continue;
+
+      FOR_EACH_IMM_USE_ON_STMT (use_p, iterator)
+	SET_USE (use_p, phi_replace);
+
+      update_stmt (stmt);
+    }
+
+  /* The original phi is now unused.  Remove it. */
+  gsi = gsi_for_stmt (phi);
+  remove_phi_node (&gsi, true);
+
+  return true;
+}
+
+/* Check if a BB has a single assignment or a single assignment
+   and a GOTO.  Return the gimple assignment or NULL if
+   the BB does not match the criteria.  */
+
+static gimple*
+block_has_single_assignment (basic_block bb)
+{
+  gimple_stmt_iterator gsi = gsi_start_nondebug_after_labels_bb (bb);
+  gimple *stmt = gsi_stmt (gsi);
+
+  if (!stmt || !is_gimple_assign (stmt))
+    return NULL;
+
+  gsi = gsi_last_nondebug_bb (bb);
+  gimple *last_stmt = gsi_stmt (gsi);
+
+  if (!last_stmt)
+    return NULL;
+
+  if (gimple_code (last_stmt) == GIMPLE_GOTO)
+    {
+      gsi_prev (&gsi);
+      last_stmt = gsi_stmt (gsi);
+    }
+
+  if (last_stmt != stmt)
+    return NULL;
+
+  return stmt;
+}
+
+static bool
+canonicalize_conditional_ops (basic_block middle1,
+			      edge e1, edge e2, gphi *phi,
+			      tree arg0, tree arg1)
+{
+  /* Limit the number of phi nodes to 2.
+     ??? Do we need to check that?  */
+  if (EDGE_COUNT (phi->bb->preds) != 2)
+    return false;
+
+  /* Check if the middle1 has a single stmt (either
+     an IOR or an AND) or a single stmt + a goto.  */
+  gimple *op1_stmt = block_has_single_assignment (middle1);
+  if (!op1_stmt)
+    return false;
+
+  /* Check if op1_stmt is coming from the TRUE edge of cond_bb.  */
+  edge e = single_pred_edge (op1_stmt->bb);
+  if (!(e->flags & EDGE_TRUE_VALUE))
+    return false;
+
+  /* Check if op1_stmt is a binary op in the format
+     SSA_NAME OP INTEGRAL_TYPE_P.  */
+  if (gimple_assign_rhs_class (op1_stmt) != GIMPLE_BINARY_RHS)
+    return false;
+
+  /* PHI arg0 must be the LHS of op1_stmt, and arg1 the RHS1.  */
+  if (arg0 != gimple_assign_lhs (op1_stmt)
+      || arg1 != gimple_assign_rhs1 (op1_stmt))
+    return false;
+
+  tree rhs1 = gimple_assign_rhs1 (op1_stmt);
+  tree rhs2 = gimple_assign_rhs2 (op1_stmt);
+  if (TREE_CODE (rhs1) != SSA_NAME
+      || TREE_CODE (rhs2) != INTEGER_CST
+      || TREE_CODE (TREE_TYPE (rhs1)) != INTEGER_TYPE)
+    return false;
+
+  /* Filter out negative immediate vals.  */
+  if (!TYPE_UNSIGNED (TREE_TYPE (rhs2)) && tree_int_cst_sgn (rhs2) < 0)
+    return false;
+
+  switch (gimple_assign_rhs_code (op1_stmt))
+    {
+      case BIT_IOR_EXPR:
+      case BIT_XOR_EXPR:
+      case LSHIFT_EXPR:
+      case RSHIFT_EXPR:
+	break;
+      default:
+	return false;
+    }
+
+  unsigned HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
+  if (popcount_hwi (imm_val) != 1)
+    return false;
+
+  return move_conditional_ops (e1, e2, phi, op1_stmt,
+			       wi::ctz (imm_val));
+}
+
 /* Auxiliary functions to determine the set of memory accesses which
    can't trap because they are preceded by accesses to the same memory
    portion.  We do that for MEM_REFs, so we only need to track
@@ -4072,6 +4252,10 @@ pass_phiopt::execute (function *)
       else if (single_pred_p (bb1)
 	       && !diamond_p
 	       && spaceship_replacement (bb, bb1, e1, e2, phi, arg0, arg1))
+	cfgchanged = true;
+      else if (single_pred_p (bb1)
+	       && !diamond_p
+	       && canonicalize_conditional_ops (bb1, e1, e2, phi, arg0, arg1))
 	cfgchanged = true;
     };
 
