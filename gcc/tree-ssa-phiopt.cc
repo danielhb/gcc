@@ -2703,6 +2703,303 @@ cond_removal_in_builtin_zero_pattern (basic_block cond_bb,
   return true;
 }
 
+/* Given ior_stmt and and_stmt like:
+
+   ior_stmt = _13 = pretmp_37 | 1048576
+   and_stmt = _15 = pretmp_37 & 4293918719
+
+   Return the common shift immediate from both (in the
+   above, 20), or -1 if none found.  */
+
+static int
+bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
+{
+  unsigned HOST_WIDE_INT ior_imm_val;
+  tree rhs1 = gimple_assign_rhs1 (ior_stmt);
+  tree rhs2 = gimple_assign_rhs2 (ior_stmt);
+  tree ssa_name, ior_imm, and_imm;
+
+  if (TREE_CODE (rhs1) == SSA_NAME
+      && INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
+    {
+      ssa_name = rhs1;
+      ior_imm = rhs2;
+    }
+  else if (TREE_CODE (rhs2) == SSA_NAME
+	   && INTEGRAL_TYPE_P (TREE_TYPE (rhs1)))
+    {
+      ssa_name = rhs2;
+      ior_imm = rhs1;	
+    }
+  else
+    return -1;
+
+  ior_imm_val = TREE_INT_CST_LOW (ior_imm);
+
+  if (popcount_hwi (ior_imm_val) != 1)
+    return -1;
+
+  rhs1 = gimple_assign_rhs1 (and_stmt);
+  rhs2 = gimple_assign_rhs2 (and_stmt);
+
+  if (TREE_CODE (rhs1) == SSA_NAME
+      && INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
+    {
+      if (rhs1 != ssa_name)
+        return -1;
+
+      and_imm = rhs2;
+    }
+  else if (TREE_CODE (rhs2) == SSA_NAME
+	   && INTEGRAL_TYPE_P (TREE_TYPE (rhs1)))
+    {
+      if (rhs2 != ssa_name)
+        return -1;
+
+      and_imm = rhs1;
+    }
+  else
+    return -1;
+
+  unsigned HOST_WIDE_INT and_imm_val = TREE_INT_CST_LOW (and_imm);
+  unsigned HOST_WIDE_INT cond_mask = GET_MODE_MASK (
+					TYPE_MODE (TREE_TYPE (and_imm)));
+
+  if (!((cond_mask & ~ior_imm_val) == and_imm_val)) {
+    return -1;
+  }
+
+  return wi::ctz (ior_imm_val);
+}
+
+/* Helper function for reduce_consecutive_bitops.  Given the
+   preconditions are met:
+
+   - create a ssa_name1 = 1 stmt in the same block as ior_stmt;
+   - create a ssa_name2 = 0 stmt in the same block as and_stmt;
+   - create a new PHI <ssa_name1, ssa_name2>
+   - create a lshift = 1 << bitop_shift in the phi block
+   - move and_stmt and ior_stmt to the phi block
+   - change ior_stmt to use the result of lshift
+   - change all instances of the old phi result and replace
+     it with the result of ior_stmt
+
+   The 'phi' argument will be removed. See the documentation in
+   reduce_consecutive_bitops for more info.  */
+
+static bool
+move_consecutive_bitops (gimple *and_stmt, gimple *ior_stmt,
+			 gphi *phi, int bitop_shift)
+{
+  gimple_stmt_iterator gsi;
+
+  /* Create a "ssa1 = 0" stmt in the and_stmt block,
+     after the and_stmt.  Do not move and_stmt yet.  */
+  tree elems_type = TREE_TYPE (gimple_assign_rhs2 (and_stmt));
+  tree zero_set = make_ssa_name (elems_type);
+  gimple *zero_stmt = gimple_build_assign (zero_set,
+					   wide_int_to_tree (elems_type, 0));
+  SSA_NAME_DEF_STMT (zero_set) = zero_stmt;
+
+  gsi = gsi_for_stmt (and_stmt);
+  gsi_insert_after (&gsi, zero_stmt, GSI_SAME_STMT);
+
+  tree one_set = make_ssa_name (elems_type);
+  gimple *one_stmt = gimple_build_assign (one_set,
+					  wide_int_to_tree (elems_type, 1));
+  SSA_NAME_DEF_STMT (one_set) = one_stmt;
+
+  gsi = gsi_for_stmt (ior_stmt);
+  gsi_insert_after (&gsi, one_stmt, GSI_SAME_STMT);
+
+  edge e = single_succ_edge (zero_stmt->bb);
+  SET_PHI_ARG_DEF (phi, e->dest_idx, zero_set);
+  e = single_succ_edge (one_stmt->bb);
+  SET_PHI_ARG_DEF (phi, e->dest_idx, one_set);
+
+  /* Create a LSHIFT stmt that uses the phi result and
+     the bitop shift.  */
+  tree gphi_res = gimple_phi_result (phi);
+  tree lshift = make_ssa_name (elems_type);
+  gimple *shift_stmt = gimple_build_assign (lshift, LSHIFT_EXPR, gphi_res,
+				wide_int_to_tree(elems_type, bitop_shift));
+  SSA_NAME_DEF_STMT (lshift) = shift_stmt;
+
+  /* Move the shift, and_stmt and ior_stmt. Use
+     gphi_res_stmt as pivot.  */
+  gsi = gsi_start_nondebug_after_labels_bb (phi->bb) ;
+  gsi_insert_before (&gsi, shift_stmt, GSI_SAME_STMT);
+  update_stmt (shift_stmt);
+
+  gsi = gsi_for_stmt (shift_stmt);
+  gimple_stmt_iterator gsi_from = gsi_for_stmt (and_stmt);
+  gsi_move_after (&gsi_from, &gsi);
+  update_stmt (and_stmt);
+
+  gsi = gsi_for_stmt (and_stmt);
+  gsi_from = gsi_for_stmt (ior_stmt);
+  gsi_move_after (&gsi_from, &gsi);
+
+  /* ior_stmt must be changed to LHS (and_stmt) | LHS (shift_stmt).  */
+  gimple_assign_set_rhs1 (ior_stmt, gimple_assign_lhs (and_stmt));
+  gimple_assign_set_rhs2 (ior_stmt, lshift);
+  update_stmt (ior_stmt);
+
+  /* Replace all uses of the old phi result with the
+     ior_stmt LHS, with the exception of shift_stmt  */
+  gimple *stmt;
+  use_operand_p use_p;
+  imm_use_iterator iterator;
+  FOR_EACH_IMM_USE_STMT (stmt, iterator, gphi_res)
+    {
+      if (stmt == shift_stmt)
+	continue;
+      FOR_EACH_IMM_USE_ON_STMT (use_p, iterator)
+	SET_USE (use_p, gimple_get_lhs (shift_stmt));
+
+      update_stmt (stmt);
+    }
+
+  return true;
+}
+
+/* Our goal with reduce_consecutive_bitops is to take
+   a diamond pattern like this:
+
+   if (iftmp.0_16 != 0)
+    goto <bb 13>; [50.00%]
+  else
+    goto <bb 14>; [50.00%]
+
+;;   basic block 13, loop depth 0, maybe hot
+;;    prev block 12, next block 14, flags: (NEW, REACHABLE, VISITED)
+;;    pred:       12 [50.0% (guessed)] (TRUE_VALUE,EXECUTABLE)
+  _13 = pretmp_37 | 1048576;
+  goto <bb 15>; [100.00%]
+
+;;   basic block 14, loop depth 0, maybe hot
+;;    prev block 13, next block 15, flags: (NEW, REACHABLE, VISITED)
+;;    pred:       12 [50.0% (guessed)] (FALSE_VALUE,EXECUTABLE)
+  _15 = pretmp_37 & 4293918719;
+;;    succ:       15 [always]  (FALLTHRU,EXECUTABLE)
+
+;;   basic block 15, loop depth 0, maybe hot
+;;    prev block 14, next block 1, flags: (NEW, REACHABLE, VISITED)
+;;    pred:       13 [always] (FALLTHRU,EXECUTABLE)
+;;                14 [always] (FALLTHRU,EXECUTABLE)
+  # _32 = PHI <_13(13), _15(14)>
+  (...)
+
+  And turn it into a simpler format with 0/1 as legs:
+
+  if (iftmp.0_16 != 0)
+    goto <bb 13>; [50.00%]
+  else
+    goto <bb 14>; [50.00%]
+
+;;   basic block 13, loop depth 0,  maybe hot
+;;    prev block 12, next block 14, flags: (NEW, REACHABLE, VISITED)
+;;    pred:       12 [50.0% (guessed)] (TRUE_VALUE,EXECUTABLE)
+  _31 = 1;
+  goto <bb 15>; [100.00%]
+;;    succ:       15 [always] (FALLTHRU,EXECUTABLE)
+
+;;   basic block 14, loop depth 0, maybe hot
+;;    prev block 13, next block 15, flags: (NEW, REACHABLE, VISITED)
+;;    pred:       12 [50.0% (guessed)] (FALSE_VALUE,EXECUTABLE)
+  _14 = 0;
+;;    succ:       15 [always]  (FALLTHRU,EXECUTABLE)
+
+;;   basic block 15, loop depth 0, maybe hot
+;;    prev block 14, next block 1, flags: (NEW, REACHABLE, VISITED)
+;;    pred:       13 [always]  (FALLTHRU,EXECUTABLE)
+;;                14 [always]  (FALLTHRU,EXECUTABLE)
+  # _33 = PHI <_31(13), _14(14)>
+  _30 = _33 << 20;
+  _15 = pretmp_37 & 4293918719;
+  _13 = _15 | _30;
+  (...)
+
+  This new pattern has more potential for optimizations and
+  less impact on branch mispredictions.  */
+
+static bool
+reduce_consecutive_bitops (basic_block middle1,
+			   basic_block middle2,
+			   gphi *phi)
+{
+  gimple_stmt_iterator gsi;
+  gimple *ior_stmt = NULL, *and_stmt = NULL;
+
+  /* Limit the number of phi nodes to 2.  We're also want
+     only fallthrough edges.   */
+  if (EDGE_COUNT (phi->bb->preds) != 2)
+    return false;
+
+  for (edge e: phi->bb->preds)
+    if (!(e->flags & EDGE_FALLTHRU))
+      return false;
+
+  /* Check if the middle blocks has a single stmt (either
+     an IOR or an AND) or a single stmt + a goto.  */
+  gsi = gsi_start_nondebug_after_labels_bb (middle1);
+  gimple *stmt = gsi_stmt (gsi);
+
+  if (!stmt)
+    return false;
+
+  if (is_gimple_assign (stmt))
+    {
+      if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
+	ior_stmt = stmt;
+      else if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
+	and_stmt = stmt;
+    }
+
+  gsi = gsi_last_nondebug_bb (middle1);
+  gimple *last_stmt = gsi_stmt (gsi);
+
+  if (!last_stmt)
+    return false;
+
+  if (last_stmt != stmt && last_stmt->code != GIMPLE_GOTO)
+    return false;
+
+  gsi = gsi_start_nondebug_after_labels_bb (middle2);
+  stmt = gsi_stmt (gsi);
+
+  if (!stmt)
+    return false;
+
+  if (is_gimple_assign (stmt))
+    {
+      if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
+	ior_stmt = stmt;
+      else if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
+	and_stmt = stmt;
+    }
+
+  gsi = gsi_last_nondebug_bb (middle2);
+  last_stmt = gsi_stmt (gsi);
+
+  if (!last_stmt)
+    return false;
+
+  if (last_stmt != stmt && last_stmt->code != GIMPLE_GOTO)
+    return false;
+
+  if (!ior_stmt || !and_stmt)
+    return false;
+
+  /* Calculate the shift immediate from the constants found
+     in ior_stmt and and_stmt.  */
+  int bitop_shift = bitops_uses_same_shift_imm (ior_stmt, and_stmt);
+  if (bitop_shift < 0)
+    return false;
+
+  return move_consecutive_bitops (and_stmt, ior_stmt, phi, bitop_shift);
+}
+
 /* Auxiliary functions to determine the set of memory accesses which
    can't trap because they are preceded by accesses to the same memory
    portion.  We do that for MEM_REFs, so we only need to track
@@ -4072,6 +4369,11 @@ pass_phiopt::execute (function *)
       else if (single_pred_p (bb1)
 	       && !diamond_p
 	       && spaceship_replacement (bb, bb1, e1, e2, phi, arg0, arg1))
+	cfgchanged = true;
+      else if (single_pred_p (bb1)
+	       && single_pred_p (bb2)
+	       && diamond_p
+	       && reduce_consecutive_bitops (bb1, bb2, phi))
 	cfgchanged = true;
     };
 
