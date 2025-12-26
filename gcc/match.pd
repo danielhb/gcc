@@ -10541,6 +10541,14 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
 	      (popcount:s @1))
       (popcount (log2 @0 @1)))))
 
+/* popcount (X & -X) is (X & -X) != 0.  */
+(simplify
+  (POPCOUNT (convert?@1 (bit_and:c @0 (negate @0))))
+  /* Use an explicit bool conversion to avoid errors when the
+     POPCOUNT result is assigned to a type (e.g. int) that
+     will generate a "bogus comparison result type" error.  */
+  (convert:boolean_type_node (ne @1 { build_zero_cst (TREE_TYPE (@1)); })))
+
 #if GIMPLE
 /* popcount(zext(X)) == popcount(X).  */
 (simplify
