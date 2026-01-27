@@ -2772,15 +2772,19 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
   return wi::ctz (ior_imm_val);
 }
 
-/* Helper function for canonicalize_conditional_ops.  Given the
-   preconditions are met:
+/* Helper function for canonicalize_conditional_*.  'op1_stmt' is
+   the OP that will receive the result of the 0/1 switch.  If
+   present, 'op2_stmt' is going to be executed before op1.  For
+   canonicalize_conditional_bitops, op1 = IOR and op2 = AND.
 
-   - create a ssa_name1 = 1 stmt in the same block as ior_stmt;
-   - create a ssa_name2 = 0 stmt in the same block as and_stmt;
+   - create a ssa_name1 = 1 stmt in the same block as op1_stmt;
+   - if op2_stmt is present, create a ssa_name2 = 0 stmt in the
+     same block as op2_stmt;
    - create a new PHI <ssa_name1, ssa_name2>
    - create a lshift = 1 << bitop_shift in the phi block
-   - move and_stmt and ior_stmt to the phi block
-   - change ior_stmt to use the result of lshift
+   - move op1_stmt to the phi block
+   - if present, op2_stmt to the phi block (before op1_stmt)
+   - change op1_stmt to use the result of lshift
    - change all instances of the old phi result and replace
      it with the result of ior_stmt
 
@@ -2788,7 +2792,7 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
    canonicalize_conditional_ops for more info.  */
 
 static bool
-move_conditional_ops (gimple *ior_stmt, gimple *and_stmt,
+move_conditional_ops (gimple *op1_stmt, gimple *and_stmt,
 		      gphi *phi, int bitop_shift)
 {
   gimple_stmt_iterator gsi;
@@ -2809,7 +2813,7 @@ move_conditional_ops (gimple *ior_stmt, gimple *and_stmt,
 					  wide_int_to_tree (elems_type, 1));
   SSA_NAME_DEF_STMT (one_set) = one_stmt;
 
-  gsi = gsi_for_stmt (ior_stmt);
+  gsi = gsi_for_stmt (op1_stmt);
   gsi_insert_after (&gsi, one_stmt, GSI_SAME_STMT);
 
   edge e = single_succ_edge (zero_stmt->bb);
@@ -2825,7 +2829,7 @@ move_conditional_ops (gimple *ior_stmt, gimple *and_stmt,
 				wide_int_to_tree(elems_type, bitop_shift));
   SSA_NAME_DEF_STMT (lshift) = shift_stmt;
 
-  /* Move the shift, and_stmt and ior_stmt. Use
+  /* Move the shift, and_stmt and op1_stmt. Use
      gphi_res_stmt as pivot.  */
   gsi = gsi_start_nondebug_after_labels_bb (phi->bb) ;
   gsi_insert_before (&gsi, shift_stmt, GSI_SAME_STMT);
@@ -2837,13 +2841,13 @@ move_conditional_ops (gimple *ior_stmt, gimple *and_stmt,
   update_stmt (and_stmt);
 
   gsi = gsi_for_stmt (and_stmt);
-  gsi_from = gsi_for_stmt (ior_stmt);
+  gsi_from = gsi_for_stmt (op1_stmt);
   gsi_move_after (&gsi_from, &gsi);
 
   /* ior_stmt must be changed to LHS (and_stmt) | LHS (shift_stmt).  */
-  gimple_assign_set_rhs1 (ior_stmt, gimple_assign_lhs (and_stmt));
-  gimple_assign_set_rhs2 (ior_stmt, lshift);
-  update_stmt (ior_stmt);
+  gimple_assign_set_rhs1 (op1_stmt, gimple_assign_lhs (and_stmt));
+  gimple_assign_set_rhs2 (op1_stmt, lshift);
+  update_stmt (op1_stmt);
 
   /* Replace all uses of the old phi result with the
      ior_stmt LHS, with the exception of shift_stmt  */
