@@ -2788,8 +2788,8 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
    canonicalize_conditional_ops for more info.  */
 
 static bool
-move_consecutive_bitops (gimple *and_stmt, gimple *ior_stmt,
-			 gphi *phi, int bitop_shift)
+move_conditional_ops (gimple *ior_stmt, gimple *and_stmt,
+		      gphi *phi, int bitop_shift)
 {
   gimple_stmt_iterator gsi;
 
@@ -2963,15 +2963,19 @@ canonicalize_conditional_ops (basic_block middle1,
 			      gphi *phi)
 {
   gimple *ior_stmt = NULL, *and_stmt = NULL;
+  bool diamond = middle2 != NULL;
+  int bitop_shift;
 
-  /* Limit the number of phi nodes to 2.  We're also want
-     only fallthrough edges.   */
+  /* Limit the number of phi nodes to 2.   */
   if (EDGE_COUNT (phi->bb->preds) != 2)
     return false;
 
-  for (edge e: phi->bb->preds)
-    if (!(e->flags & EDGE_FALLTHRU))
-      return false;
+  /* Check if we have only fallthru edges in join_bb for a diamond.
+     ??? Maybe this check is done elsewhere ...  */
+  if (diamond)
+    for (edge e: phi->bb->preds)
+      if (!(e->flags & EDGE_FALLTHRU))
+	return false;
 
   /* Check if the middle blocks has a single stmt (either
      an IOR or an AND) or a single stmt + a goto.  */
@@ -2980,35 +2984,43 @@ canonicalize_conditional_ops (basic_block middle1,
   if (!stmt)
     return false;
 
-  if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
+  if (diamond)
+    {
+      if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
+	ior_stmt = stmt;
+      else if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
+	and_stmt = stmt;
+      else
+	return false;
+
+      stmt = block_has_single_assignment(middle2);
+      if (!stmt)
+	return false;
+
+      if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
+	ior_stmt = stmt;
+      else if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
+	and_stmt = stmt;
+      else
+	return false;
+
+      /* We need both ior_stmt and and_stmt.  */
+      if (!ior_stmt || !and_stmt)
+	return false;
+
+    /* Calculate the shift immediate from the constants found
+       in ior_stmt and and_stmt.  */
+    bitop_shift = bitops_uses_same_shift_imm (ior_stmt, and_stmt);
+    if (bitop_shift < 0)
+      return false;
+  } else {
     ior_stmt = stmt;
-  else if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
-    and_stmt = stmt;
-  else
-    return false;
+    /* TODO: need to set this properly for the non-diamond case
+       (or leave it 0 and move_consecutive_bitops will deal with it).  */
+    bitop_shift = 0;
+  }
 
-  stmt = block_has_single_assignment(middle2);
-  if (!stmt)
-    return false;
-
-  if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
-    ior_stmt = stmt;
-  else if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
-    and_stmt = stmt;
-  else
-    return false;
-
-  /* We need both ior_stmt and and_stmt.  */
-  if (!ior_stmt || !and_stmt)
-    return false;
-
-  /* Calculate the shift immediate from the constants found
-     in ior_stmt and and_stmt.  */
-  int bitop_shift = bitops_uses_same_shift_imm (ior_stmt, and_stmt);
-  if (bitop_shift < 0)
-    return false;
-
-  return move_consecutive_bitops (and_stmt, ior_stmt, phi, bitop_shift);
+  return move_conditional_ops (ior_stmt, and_stmt, phi, bitop_shift);
 }
 
 /* Auxiliary functions to determine the set of memory accesses which
