@@ -2772,7 +2772,7 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
   return wi::ctz (ior_imm_val);
 }
 
-/* Helper function for reduce_consecutive_bitops.  Given the
+/* Helper function for canonicalize_conditional_ops.  Given the
    preconditions are met:
 
    - create a ssa_name1 = 1 stmt in the same block as ior_stmt;
@@ -2785,7 +2785,7 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
      it with the result of ior_stmt
 
    The 'phi' argument will be removed. See the documentation in
-   reduce_consecutive_bitops for more info.  */
+   canonicalize_conditional_ops for more info.  */
 
 static bool
 move_consecutive_bitops (gimple *and_stmt, gimple *ior_stmt,
@@ -2863,70 +2863,78 @@ move_consecutive_bitops (gimple *and_stmt, gimple *ior_stmt,
   return true;
 }
 
-/* Our goal with reduce_consecutive_bitops is to take
-   a diamond pattern like this:
+/* Our goal with canonicalize_conditional_ops is to turn conditional
+   binary ops and canonicalize them by (1) moving the op to merge BB,
+   making it unconditional and (2) use a 0/1 switch with the OP.  This
+   allows for a wider range of possible optimizations.  A usual
+   optimization with this canonicalization is the use of 'cond' as the
+   0/1 switch, eliminating the branch.
 
-   if (iftmp.0_16 != 0)
-    goto <bb 13>; [50.00%]
-  else
-    goto <bb 14>; [50.00%]
+   We support two patterns.  The basic pattern is:
 
-;;   basic block 13, loop depth 0, maybe hot
-;;    prev block 12, next block 14, flags: (NEW, REACHABLE, VISITED)
-;;    pred:       12 [50.0% (guessed)] (TRUE_VALUE,EXECUTABLE)
-  _13 = pretmp_37 | 1048576;
-  goto <bb 15>; [100.00%]
+   VAR1 = ...
+   if (cond) goto THEN_BB; else goto JOIN_BB
+   THEN_BB:
+     VAR2 = VAR1 OP B;
+     goto JOIN_BB;
+   JOIN_BB ():
+     # VAR3 = PHI (VAR1, VAR2)
+     ...
 
-;;   basic block 14, loop depth 0, maybe hot
-;;    prev block 13, next block 15, flags: (NEW, REACHABLE, VISITED)
-;;    pred:       12 [50.0% (guessed)] (FALSE_VALUE,EXECUTABLE)
-  _15 = pretmp_37 & 4293918719;
-;;    succ:       15 [always]  (FALLTHRU,EXECUTABLE)
+   We want to turn it to:
 
-;;   basic block 15, loop depth 0, maybe hot
-;;    prev block 14, next block 1, flags: (NEW, REACHABLE, VISITED)
-;;    pred:       13 [always] (FALLTHRU,EXECUTABLE)
-;;                14 [always] (FALLTHRU,EXECUTABLE)
-  # _32 = PHI <_13(13), _15(14)>
-  (...)
+   VAR1 = ...
+   if (cond) goto THEN_BB; else goto JOIN_BB
+   THEN_BB:
+     VAL = 1;
+     goto JOIN_BB;
+   JOIN_BB ():
+     # VAL2 = PHI (0, 1)
+     VAL3 = B * VAL2;
+     VAR2 = VAR1 OP VAL3;
+     ...
 
-  And turn it into a simpler format with 0/1 as legs:
+  The second pattern is a diamond shape that has two opposing OPs
+  (IOR and AND) that uses the same immediate.  E.g.:
 
-  if (iftmp.0_16 != 0)
-    goto <bb 13>; [50.00%]
-  else
-    goto <bb 14>; [50.00%]
+  VAR1 = ...
+  if (cond) goto THEN_BB; else goto ELSE_BB
+  THEN_BB:
+     VAR2 = VAR1 | bitN (set bit)
+     goto JOIN_BB;
+   ELSE_BB:
+     VAR3 = VAR1 & bitN (clear bit)
+     fallthrough
+   JOIN_BB:
+     # VAR4 = PHI (VAR2, VAR3)
 
-;;   basic block 13, loop depth 0,  maybe hot
-;;    prev block 12, next block 14, flags: (NEW, REACHABLE, VISITED)
-;;    pred:       12 [50.0% (guessed)] (TRUE_VALUE,EXECUTABLE)
-  _31 = 1;
-  goto <bb 15>; [100.00%]
-;;    succ:       15 [always] (FALLTHRU,EXECUTABLE)
+  We can achieve the same result by moving bit clear and bit set
+  OPs to JOIN_BB, doing the bit clear unconditionally and gating
+  the bit set with a 0/1 switch:
 
-;;   basic block 14, loop depth 0, maybe hot
-;;    prev block 13, next block 15, flags: (NEW, REACHABLE, VISITED)
-;;    pred:       12 [50.0% (guessed)] (FALSE_VALUE,EXECUTABLE)
-  _14 = 0;
-;;    succ:       15 [always]  (FALLTHRU,EXECUTABLE)
+  VAR1 = ...
+  if (cond) goto THEN_BB; else goto ELSE_BB
+  THEN_BB:
+     VAL1 = 1;
+     goto JOIN_BB;
+   ELSE_BB:
+     VAL2 = 0;
+     fallthrough
+   JOIN_BB:
+     # VAL3 = PHI (0, 1)
+     VAL4 = VAL3 << bitN;
+     VAR2 = VAR1 & bitN; (bit clear)
+     VAR3 = VAR2 | VAL4 (bit set)
+     ...
 
-;;   basic block 15, loop depth 0, maybe hot
-;;    prev block 14, next block 1, flags: (NEW, REACHABLE, VISITED)
-;;    pred:       13 [always]  (FALLTHRU,EXECUTABLE)
-;;                14 [always]  (FALLTHRU,EXECUTABLE)
-  # _33 = PHI <_31(13), _14(14)>
-  _30 = _33 << 20;
-  _15 = pretmp_37 & 4293918719;
-  _13 = _15 | _30;
-  (...)
-
-  This new pattern has more potential for optimizations and
-  less impact on branch mispredictions.  */
+  This format is more restictive since we need to check for the same
+  immediate/bit being used in THEN_BB and ELSE_BB.  We're also supporting
+  just IOR/AND for it.  */
 
 static bool
-reduce_consecutive_bitops (basic_block middle1,
-			   basic_block middle2,
-			   gphi *phi)
+canonicalize_conditional_ops (basic_block middle1,
+			      basic_block middle2,
+			      gphi *phi)
 {
   gimple_stmt_iterator gsi;
   gimple *ior_stmt = NULL, *and_stmt = NULL;
@@ -4373,7 +4381,7 @@ pass_phiopt::execute (function *)
       else if (single_pred_p (bb1)
 	       && single_pred_p (bb2)
 	       && diamond_p
-	       && reduce_consecutive_bitops (bb1, bb2, phi))
+	       && canonicalize_conditional_ops (bb1, bb2, phi))
 	cfgchanged = true;
     };
 
