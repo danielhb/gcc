@@ -2863,6 +2863,32 @@ move_consecutive_bitops (gimple *and_stmt, gimple *ior_stmt,
   return true;
 }
 
+/* Check if a BB has a single assignment or a single assignment
+   and a GOTO.  Return the gimple assignment or NULL if
+   the BB does not match the criteria.  */
+
+static gimple*
+block_has_single_assignment (basic_block bb)
+{
+  gimple_stmt_iterator gsi = gsi_start_nondebug_after_labels_bb (bb);
+  gimple *stmt = gsi_stmt (gsi);
+
+  if (!stmt || !is_gimple_assign (stmt))
+    return NULL;
+
+  gsi = gsi_last_nondebug_bb (bb);
+  gimple *last_stmt = gsi_stmt (gsi);
+
+  if (!last_stmt)
+    return NULL;
+
+  if (last_stmt != stmt && last_stmt->code != GIMPLE_GOTO)
+    return NULL;
+
+  return stmt;
+}
+
+
 /* Our goal with canonicalize_conditional_ops is to turn conditional
    binary ops and canonicalize them by (1) moving the op to merge BB,
    making it unconditional and (2) use a 0/1 switch with the OP.  This
@@ -2936,7 +2962,6 @@ canonicalize_conditional_ops (basic_block middle1,
 			      basic_block middle2,
 			      gphi *phi)
 {
-  gimple_stmt_iterator gsi;
   gimple *ior_stmt = NULL, *and_stmt = NULL;
 
   /* Limit the number of phi nodes to 2.  We're also want
@@ -2950,52 +2975,30 @@ canonicalize_conditional_ops (basic_block middle1,
 
   /* Check if the middle blocks has a single stmt (either
      an IOR or an AND) or a single stmt + a goto.  */
-  gsi = gsi_start_nondebug_after_labels_bb (middle1);
-  gimple *stmt = gsi_stmt (gsi);
+  gimple *stmt = block_has_single_assignment(middle1);
 
   if (!stmt)
     return false;
 
-  if (is_gimple_assign (stmt))
-    {
-      if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
-	ior_stmt = stmt;
-      else if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
-	and_stmt = stmt;
-    }
-
-  gsi = gsi_last_nondebug_bb (middle1);
-  gimple *last_stmt = gsi_stmt (gsi);
-
-  if (!last_stmt)
+  if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
+    ior_stmt = stmt;
+  else if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
+    and_stmt = stmt;
+  else
     return false;
 
-  if (last_stmt != stmt && last_stmt->code != GIMPLE_GOTO)
-    return false;
-
-  gsi = gsi_start_nondebug_after_labels_bb (middle2);
-  stmt = gsi_stmt (gsi);
-
+  stmt = block_has_single_assignment(middle2);
   if (!stmt)
     return false;
 
-  if (is_gimple_assign (stmt))
-    {
-      if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
-	ior_stmt = stmt;
-      else if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
-	and_stmt = stmt;
-    }
-
-  gsi = gsi_last_nondebug_bb (middle2);
-  last_stmt = gsi_stmt (gsi);
-
-  if (!last_stmt)
+  if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
+    ior_stmt = stmt;
+  else if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
+    and_stmt = stmt;
+  else
     return false;
 
-  if (last_stmt != stmt && last_stmt->code != GIMPLE_GOTO)
-    return false;
-
+  /* We need both ior_stmt and and_stmt.  */
   if (!ior_stmt || !and_stmt)
     return false;
 
