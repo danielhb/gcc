@@ -2845,6 +2845,8 @@ move_conditional_ops (gimple *op1_stmt, gimple *and_stmt,
   gsi_move_after (&gsi_from, &gsi);
 
   /* ior_stmt must be changed to LHS (and_stmt) | LHS (shift_stmt).  */
+  /* op1_stmt rhs2 must be changed to LHS (shift_stmt).  If we
+     have op2_stmt, then rhs1 must also be changed to LHS (op2_stmt)*/
   gimple_assign_set_rhs1 (op1_stmt, gimple_assign_lhs (and_stmt));
   gimple_assign_set_rhs2 (op1_stmt, lshift);
   update_stmt (op1_stmt);
