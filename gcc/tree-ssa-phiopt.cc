@@ -2888,15 +2888,14 @@ block_has_single_assignment (basic_block bb)
   return stmt;
 }
 
-
-/* Our goal with canonicalize_conditional_ops is to turn conditional
+/* Our goal with canonicalize_conditional_op is to turn conditional
    binary ops and canonicalize them by (1) moving the op to merge BB,
    making it unconditional and (2) use a 0/1 switch with the OP.  This
    allows for a wider range of possible optimizations.  A usual
    optimization with this canonicalization is the use of 'cond' as the
    0/1 switch, eliminating the branch.
 
-   We support two patterns.  The basic pattern is:
+   The pattern supported is:
 
    VAR1 = ...
    if (cond) goto THEN_BB; else goto JOIN_BB
@@ -2918,50 +2917,13 @@ block_has_single_assignment (basic_block bb)
      # VAL2 = PHI (0, 1)
      VAL3 = B * VAL2;
      VAR2 = VAR1 OP VAL3;
-     ...
-
-  The second pattern is a diamond shape that has two opposing OPs
-  (IOR and AND) that uses the same immediate.  E.g.:
-
-  VAR1 = ...
-  if (cond) goto THEN_BB; else goto ELSE_BB
-  THEN_BB:
-     VAR2 = VAR1 | bitN (set bit)
-     goto JOIN_BB;
-   ELSE_BB:
-     VAR3 = VAR1 & bitN (clear bit)
-     fallthrough
-   JOIN_BB:
-     # VAR4 = PHI (VAR2, VAR3)
-
-  We can achieve the same result by moving bit clear and bit set
-  OPs to JOIN_BB, doing the bit clear unconditionally and gating
-  the bit set with a 0/1 switch:
-
-  VAR1 = ...
-  if (cond) goto THEN_BB; else goto ELSE_BB
-  THEN_BB:
-     VAL1 = 1;
-     goto JOIN_BB;
-   ELSE_BB:
-     VAL2 = 0;
-     fallthrough
-   JOIN_BB:
-     # VAL3 = PHI (0, 1)
-     VAL4 = VAL3 << bitN;
-     VAR2 = VAR1 & bitN; (bit clear)
-     VAR3 = VAR2 | VAL4 (bit set)
-     ...
-
-  This format is more restictive since we need to check for the same
-  immediate/bit being used in THEN_BB and ELSE_BB.  We're also supporting
-  just IOR/AND for it.  */
+     ...  */
 
 static bool
-canonicalize_conditional_ops (basic_block middle1,
-			      basic_block middle2,
-			      gphi *phi)
+canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNUSED gphi *phi)
 {
+  return false;
+#if 0
   gimple *ior_stmt = NULL, *and_stmt = NULL;
   bool diamond = middle2 != NULL;
   int bitop_shift;
@@ -3019,6 +2981,102 @@ canonicalize_conditional_ops (basic_block middle1,
        (or leave it 0 and move_consecutive_bitops will deal with it).  */
     bitop_shift = 0;
   }
+
+  return move_conditional_ops (ior_stmt, and_stmt, phi, bitop_shift);
+#endif
+}
+
+
+/* This is a more specific case for canonicalize_conditional_op
+   where we have a diamond shape that has two opposing OPs
+   (IOR and AND) that uses the same immediate.  The idea is the same
+   as the sister function: (1) moving both ops to merge BB, making
+   both unconditional and (2) use a 0/1 switch with the IOR (bit set).
+
+   In short, if we have this:
+
+   VAR1 = ...
+   if (cond) goto THEN_BB; else goto ELSE_BB
+   THEN_BB:
+     VAR2 = VAR1 | bitN (set bit)
+     goto JOIN_BB;
+   ELSE_BB:
+     VAR3 = VAR1 & bitN (clear bit)
+     fallthrough
+   JOIN_BB:
+     # VAR4 = PHI (VAR2, VAR3)
+
+  We can achieve the same result by moving bit clear and bit set
+  OPs to JOIN_BB, doing the bit clear unconditionally and gating
+  the bit set with a 0/1 switch:
+
+  VAR1 = ...
+  if (cond) goto THEN_BB; else goto ELSE_BB
+  THEN_BB:
+     VAL1 = 1;
+     goto JOIN_BB;
+   ELSE_BB:
+     VAL2 = 0;
+     fallthrough
+   JOIN_BB:
+     # VAL3 = PHI (0, 1)
+     VAL4 = VAL3 << bitN;
+     VAR2 = VAR1 & bitN; (bit clear)
+     VAR3 = VAR2 | VAL4 (bit set)
+     ...  */
+
+static bool
+canonicalize_conditional_bitops (basic_block middle1,
+			         basic_block middle2,
+			         gphi *phi)
+{
+  gimple *ior_stmt = NULL, *and_stmt = NULL;
+  int bitop_shift;
+
+  /* Limit the number of phi nodes to 2.   */
+  if (EDGE_COUNT (phi->bb->preds) != 2)
+    return false;
+
+  /* Check if we have only fallthru edges in join_bb for a diamond.
+     ??? Maybe this check is done elsewhere ...  */
+  for (edge e: phi->bb->preds)
+    if (!(e->flags & EDGE_FALLTHRU))
+      return false;
+
+  /* Check if the middle blocks has a single stmt (either
+     an IOR or an AND) or a single stmt + a goto.  */
+  gimple *stmt = block_has_single_assignment(middle1);
+
+  if (!stmt)
+    return false;
+
+  if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
+    ior_stmt = stmt;
+  else if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
+    and_stmt = stmt;
+  else
+    return false;
+
+  stmt = block_has_single_assignment(middle2);
+  if (!stmt)
+    return false;
+
+  if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
+    ior_stmt = stmt;
+  else if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
+    and_stmt = stmt;
+  else
+    return false;
+
+  /* We need both ior_stmt and and_stmt.  */
+  if (!ior_stmt || !and_stmt)
+    return false;
+
+  /* Calculate the shift immediate from the constants found
+     in ior_stmt and and_stmt.  */
+  bitop_shift = bitops_uses_same_shift_imm (ior_stmt, and_stmt);
+  if (bitop_shift < 0)
+    return false;
 
   return move_conditional_ops (ior_stmt, and_stmt, phi, bitop_shift);
 }
@@ -4395,8 +4453,13 @@ pass_phiopt::execute (function *)
 	cfgchanged = true;
       else if (single_pred_p (bb1)
 	       && single_pred_p (bb2)
+	       && !diamond_p
+	       && canonicalize_conditional_op (bb1, phi))
+	cfgchanged = true;
+      else if (single_pred_p (bb1)
+	       && single_pred_p (bb2)
 	       && diamond_p
-	       && canonicalize_conditional_ops (bb1, bb2, phi))
+	       && canonicalize_conditional_bitops (bb1, bb2, phi))
 	cfgchanged = true;
     };
 
