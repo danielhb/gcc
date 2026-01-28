@@ -2787,27 +2787,17 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
    - change op1_stmt to use the result of lshift
    - change all instances of the old phi result and replace
      it with the result of ior_stmt
-
-   The 'phi' argument will be removed. See the documentation in
-   canonicalize_conditional_ops for more info.  */
+  */
 
 static bool
-move_conditional_ops (gimple *op1_stmt, gimple *and_stmt,
+move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
 		      gphi *phi, int bitop_shift)
 {
+  tree elems_type = TREE_TYPE (gimple_assign_rhs2 (op1_stmt));
   gimple_stmt_iterator gsi;
 
-  /* Create a "ssa1 = 0" stmt in the and_stmt block,
-     after the and_stmt.  Do not move and_stmt yet.  */
-  tree elems_type = TREE_TYPE (gimple_assign_rhs2 (and_stmt));
-  tree zero_set = make_ssa_name (elems_type);
-  gimple *zero_stmt = gimple_build_assign (zero_set,
-					   wide_int_to_tree (elems_type, 0));
-  SSA_NAME_DEF_STMT (zero_set) = zero_stmt;
-
-  gsi = gsi_for_stmt (and_stmt);
-  gsi_insert_after (&gsi, zero_stmt, GSI_SAME_STMT);
-
+  /* Create a "ssa1 = 1" stmt in the op1_stmt block.
+    Set the PHI node for that block to 1.  */
   tree one_set = make_ssa_name (elems_type);
   gimple *one_stmt = gimple_build_assign (one_set,
 					  wide_int_to_tree (elems_type, 1));
@@ -2816,52 +2806,94 @@ move_conditional_ops (gimple *op1_stmt, gimple *and_stmt,
   gsi = gsi_for_stmt (op1_stmt);
   gsi_insert_after (&gsi, one_stmt, GSI_SAME_STMT);
 
-  edge e = single_succ_edge (zero_stmt->bb);
-  SET_PHI_ARG_DEF (phi, e->dest_idx, zero_set);
-  e = single_succ_edge (one_stmt->bb);
+  edge e = single_succ_edge (one_stmt->bb);
   SET_PHI_ARG_DEF (phi, e->dest_idx, one_set);
 
-  /* Create a LSHIFT stmt that uses the phi result and
-     the bitop shift.  */
+  /* If we have an OP2 (i.e. this is the IOR/AND diamond pattern):
+     - Create a "ssa1 = 0" stmt in the op2_stmt block
+     - Set the PHI node for that block to 0
+     - result_stmt is a LSHIFT stmt that uses the phi result and
+       the bitop shift
+
+     Otherwise:
+     - Set the PHI node of the cond_block to 0
+     - result_stmt is a MULT stmt that uses the phi result and
+       op1_imm.  */
+
   tree gphi_res = gimple_phi_result (phi);
-  tree lshift = make_ssa_name (elems_type);
-  gimple *shift_stmt = gimple_build_assign (lshift, LSHIFT_EXPR, gphi_res,
+  gimple *result_stmt;
+  if (op2_stmt)
+    {
+      tree zero_set = make_ssa_name (elems_type);
+      gimple *zero_stmt = gimple_build_assign (zero_set,
+					wide_int_to_tree (elems_type, 0));
+      SSA_NAME_DEF_STMT (zero_set) = zero_stmt;
+
+      gsi = gsi_for_stmt (op2_stmt);
+      gsi_insert_after (&gsi, zero_stmt, GSI_SAME_STMT);
+
+      e = single_succ_edge (zero_stmt->bb);
+      SET_PHI_ARG_DEF (phi, e->dest_idx, zero_set);
+
+      /* Create a LSHIFT stmt that uses the phi result and
+	 the bitop shift.  */
+      tree lshift = make_ssa_name (elems_type);
+      result_stmt = gimple_build_assign (lshift, LSHIFT_EXPR, gphi_res,
 				wide_int_to_tree(elems_type, bitop_shift));
-  SSA_NAME_DEF_STMT (lshift) = shift_stmt;
+      SSA_NAME_DEF_STMT (lshift) = result_stmt;
+    }
+  else
+    {
+      e = single_pred_edge (op1_stmt->bb);
+      SET_PHI_ARG_DEF (phi, e->dest_idx,
+		       wide_int_to_tree (elems_type, 0));
 
-  /* Move the shift, and_stmt and op1_stmt. Use
-     gphi_res_stmt as pivot.  */
+      tree mult = make_ssa_name (elems_type);
+      result_stmt = gimple_build_assign (mult, MULT_EXPR, gphi_res,
+				wide_int_to_tree(elems_type, bitop_shift));
+      SSA_NAME_DEF_STMT (mult) = result_stmt;
+    }
+
+  /* Move result_stmt, op2_stmt if applicable and op1_stmt.
+     op2_stmt must come before op1_stmt.  */
   gsi = gsi_start_nondebug_after_labels_bb (phi->bb) ;
-  gsi_insert_before (&gsi, shift_stmt, GSI_SAME_STMT);
-  update_stmt (shift_stmt);
+  gsi_insert_before (&gsi, result_stmt, GSI_SAME_STMT);
+  update_stmt (result_stmt);
 
-  gsi = gsi_for_stmt (shift_stmt);
-  gimple_stmt_iterator gsi_from = gsi_for_stmt (and_stmt);
-  gsi_move_after (&gsi_from, &gsi);
-  update_stmt (and_stmt);
+  gsi = gsi_for_stmt (result_stmt);
+  gimple_stmt_iterator gsi_from;
 
-  gsi = gsi_for_stmt (and_stmt);
+  if (op2_stmt)
+    {
+      gsi_from = gsi_for_stmt (op2_stmt);
+      gsi_move_after (&gsi_from, &gsi);
+      update_stmt (op2_stmt);
+
+      gsi = gsi_for_stmt (op2_stmt);
+    }
+
   gsi_from = gsi_for_stmt (op1_stmt);
   gsi_move_after (&gsi_from, &gsi);
 
-  /* ior_stmt must be changed to LHS (and_stmt) | LHS (shift_stmt).  */
-  /* op1_stmt rhs2 must be changed to LHS (shift_stmt).  If we
-     have op2_stmt, then rhs1 must also be changed to LHS (op2_stmt)*/
-  gimple_assign_set_rhs1 (op1_stmt, gimple_assign_lhs (and_stmt));
-  gimple_assign_set_rhs2 (op1_stmt, lshift);
+  /* op1_stmt rhs2 must be changed to LHS (result_stmt).  If
+     we have op2_stmt then op1_stmt rhs1 must also be changed
+     to LHS (op2_stmt)*/
+  gimple_assign_set_rhs2 (op1_stmt, gimple_assign_lhs (result_stmt));
+  if (op2_stmt)
+    gimple_assign_set_rhs1 (op1_stmt, gimple_assign_lhs (op2_stmt));
   update_stmt (op1_stmt);
 
   /* Replace all uses of the old phi result with the
-     ior_stmt LHS, with the exception of shift_stmt  */
+     ior_stmt LHS, with the exception of result_stmt  */
   gimple *stmt;
   use_operand_p use_p;
   imm_use_iterator iterator;
   FOR_EACH_IMM_USE_STMT (stmt, iterator, gphi_res)
     {
-      if (stmt == shift_stmt)
+      if (stmt == result_stmt)
 	continue;
       FOR_EACH_IMM_USE_ON_STMT (use_p, iterator)
-	SET_USE (use_p, gimple_get_lhs (shift_stmt));
+	SET_USE (use_p, gimple_get_lhs (result_stmt));
 
       update_stmt (stmt);
     }
