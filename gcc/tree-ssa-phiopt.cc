@@ -2973,11 +2973,33 @@ canonicalize_conditional_op (basic_block middle1, gphi *phi)
   if (!op1_stmt)
     return false;
 
-  /* Check if op1_stmt is a binary op.  */
+  /* Check if op1_stmt is a binary op in the format
+     SSA_NAME OP INTEGRAL_TYPE_P.  Supported OPs:
+     IOR LSHIFT RSHIFT PLUS MINUS.  */
+
   if (gimple_assign_rhs_class (op1_stmt) != GIMPLE_BINARY_RHS)
     return false;
 
-  imm_val = TREE_INT_CST_LOW (gimple_assign_rhs2 (op1_stmt));
+  switch (gimple_assign_rhs_code (op1_stmt))
+    {
+      case BIT_IOR_EXPR:
+      case LSHIFT_EXPR:
+      case RSHIFT_EXPR:
+      case PLUS_EXPR:
+      case MINUS_EXPR:
+	break;
+      default:
+        return false;
+    }
+
+  tree rhs1 = gimple_assign_rhs1 (op1_stmt);
+  tree rhs2 = gimple_assign_rhs2 (op1_stmt);
+  if (TREE_CODE (rhs1) != SSA_NAME
+      || !INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
+      || TREE_CODE (rhs2) != INTEGER_CST)
+    return false;
+
+  imm_val = TREE_INT_CST_LOW (rhs2);
 
   return move_conditional_ops (op1_stmt, NULL, phi, imm_val);
 }
