@@ -2714,14 +2714,15 @@ cond_removal_in_builtin_zero_pattern (basic_block cond_bb,
 static int
 bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
 {
-  unsigned HOST_WIDE_INT ior_imm_val;
+  HOST_WIDE_INT ior_imm_val;
   tree rhs1 = gimple_assign_rhs1 (ior_stmt);
   tree rhs2 = gimple_assign_rhs2 (ior_stmt);
   tree ssa_name, ior_imm, and_imm;
 
   if (TREE_CODE (rhs1) == SSA_NAME
+      && TREE_CODE (rhs2) == INTEGER_CST
       && INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
-      && TREE_CODE (rhs2) == INTEGER_CST)
+      && INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
     {
       ssa_name = rhs1;
       ior_imm = rhs2;
@@ -2731,6 +2732,10 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
 
   ior_imm_val = TREE_INT_CST_LOW (ior_imm);
 
+  /* Do not try to deal with negative immediates.  */
+  if (ior_imm_val < 0)
+    return -1;
+
   if (popcount_hwi (ior_imm_val) != 1)
     return -1;
 
@@ -2738,8 +2743,9 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
   rhs2 = gimple_assign_rhs2 (and_stmt);
 
   if (TREE_CODE (rhs1) == SSA_NAME
+      && TREE_CODE (rhs2) == INTEGER_CST
       && INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
-      && TREE_CODE (rhs2) == INTEGER_CST)
+      && INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
     {
       if (rhs1 != ssa_name)
 	return -1;
@@ -2947,8 +2953,10 @@ block_has_single_assignment (basic_block bb)
      ...  */
 
 static bool
-canonicalize_conditional_op (basic_block middle1, gphi *phi)
+canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNUSED gphi *phi)
 {
+  return false;
+#if 0
   unsigned HOST_WIDE_INT imm_val;
 
   /* Limit the number of phi nodes to 2.   */
@@ -2990,6 +2998,7 @@ canonicalize_conditional_op (basic_block middle1, gphi *phi)
   imm_val = TREE_INT_CST_LOW (rhs2);
 
   return move_conditional_ops (op1_stmt, NULL, phi, imm_val);
+#endif
 }
 
 
