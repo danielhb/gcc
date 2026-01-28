@@ -2787,7 +2787,7 @@ static bool
 move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
 		      gphi *phi, int result_imm)
 {
-  tree elems_type = TREE_TYPE (gimple_assign_rhs1 (op1_stmt));
+  tree elems_type = TREE_TYPE (gimple_assign_lhs (op1_stmt));
   gimple_stmt_iterator gsi;
 
   /* Create a "ssa1 = 1" stmt in the op1_stmt block.
@@ -2957,8 +2957,6 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
 {
   return false;
 #if 0
-  unsigned HOST_WIDE_INT imm_val;
-
   /* Limit the number of phi nodes to 2.   */
   if (EDGE_COUNT (phi->bb->preds) != 2)
     return false;
@@ -2981,8 +2979,8 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
       case BIT_IOR_EXPR:
       case LSHIFT_EXPR:
       case RSHIFT_EXPR:
-      case PLUS_EXPR:
-      case MINUS_EXPR:
+      // case PLUS_EXPR:
+      // case MINUS_EXPR:
 	break;
       default:
         return false;
@@ -2991,11 +2989,12 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
   tree rhs1 = gimple_assign_rhs1 (op1_stmt);
   tree rhs2 = gimple_assign_rhs2 (op1_stmt);
   if (TREE_CODE (rhs1) != SSA_NAME
+      || TREE_CODE (rhs2) != INTEGER_CST
       || !INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
-      || TREE_CODE (rhs2) != INTEGER_CST)
+      || !INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
     return false;
 
-  imm_val = TREE_INT_CST_LOW (rhs2);
+  HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
 
   return move_conditional_ops (op1_stmt, NULL, phi, imm_val);
 #endif
