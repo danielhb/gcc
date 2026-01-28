@@ -2720,16 +2720,11 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
   tree ssa_name, ior_imm, and_imm;
 
   if (TREE_CODE (rhs1) == SSA_NAME
-      && INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
+      && INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
+      && TREE_CODE (rhs2) == INTEGER_CST)
     {
       ssa_name = rhs1;
       ior_imm = rhs2;
-    }
-  else if (TREE_CODE (rhs2) == SSA_NAME
-	   && INTEGRAL_TYPE_P (TREE_TYPE (rhs1)))
-    {
-      ssa_name = rhs2;
-      ior_imm = rhs1;	
     }
   else
     return -1;
@@ -2743,20 +2738,13 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
   rhs2 = gimple_assign_rhs2 (and_stmt);
 
   if (TREE_CODE (rhs1) == SSA_NAME
-      && INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
+      && INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
+      && TREE_CODE (rhs2) == INTEGER_CST)
     {
       if (rhs1 != ssa_name)
 	return -1;
 
       and_imm = rhs2;
-    }
-  else if (TREE_CODE (rhs2) == SSA_NAME
-	   && INTEGRAL_TYPE_P (TREE_TYPE (rhs1)))
-    {
-      if (rhs2 != ssa_name)
-	return -1;
-
-      and_imm = rhs1;
     }
   else
     return -1;
