@@ -2711,7 +2711,7 @@ cond_removal_in_builtin_zero_pattern (basic_block cond_bb,
    Return the common shift immediate from both (in the
    above, 20), or -1 if none found.  */
 
-static tree
+static int
 bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
 {
   unsigned HOST_WIDE_INT ior_imm_val;
@@ -2732,12 +2732,12 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
       ior_imm = rhs1;	
     }
   else
-    return NULL;
+    return -1;
 
   ior_imm_val = TREE_INT_CST_LOW (ior_imm);
 
   if (popcount_hwi (ior_imm_val) != 1)
-    return NULL;
+    return -1;
 
   rhs1 = gimple_assign_rhs1 (and_stmt);
   rhs2 = gimple_assign_rhs2 (and_stmt);
@@ -2746,7 +2746,7 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
       && INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
     {
       if (rhs1 != ssa_name)
-	return NULL;
+	return -1;
 
       and_imm = rhs2;
     }
@@ -2754,22 +2754,22 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
 	   && INTEGRAL_TYPE_P (TREE_TYPE (rhs1)))
     {
       if (rhs2 != ssa_name)
-	return NULL;
+	return -1;
 
       and_imm = rhs1;
     }
   else
-    return NULL;
+    return -1;
 
   unsigned HOST_WIDE_INT and_imm_val = TREE_INT_CST_LOW (and_imm);
   unsigned HOST_WIDE_INT cond_mask = GET_MODE_MASK (
 					TYPE_MODE (TREE_TYPE (and_imm)));
 
   if (!((cond_mask & ~ior_imm_val) == and_imm_val)) {
-    return NULL;
+    return -1;
   }
 
-  return wide_int_to_tree(TREE_TYPE (ior_imm), wi::ctz (ior_imm_val));
+  return wi::ctz (ior_imm_val);
 }
 
 /* Helper function for canonicalize_conditional_*.  'op1_stmt' is
@@ -2791,7 +2791,7 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
 
 static bool
 move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
-		      gphi *phi, tree result_imm)
+		      gphi *phi, int result_imm)
 {
   tree elems_type = TREE_TYPE (gimple_assign_rhs1 (op1_stmt));
   gimple_stmt_iterator gsi;
@@ -2821,6 +2821,7 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
        op1_imm.  */
 
   tree gphi_res = gimple_phi_result (phi);
+  tree result_imm_tree = wide_int_to_tree (elems_type, result_imm);
   gimple *result_stmt;
   if (op2_stmt)
     {
@@ -2839,7 +2840,7 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
 	 the bitop shift.  */
       tree lshift = make_ssa_name (elems_type);
       result_stmt = gimple_build_assign (lshift, LSHIFT_EXPR, gphi_res,
-					 result_imm);
+					 result_imm_tree);
       SSA_NAME_DEF_STMT (lshift) = result_stmt;
     }
   else
@@ -2849,11 +2850,8 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
 		       wide_int_to_tree (elems_type, 0));
 
       tree mult = make_ssa_name (elems_type);
-      unsigned HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (gimple_assign_rhs2 (op1_stmt));
-      printf ("------- imm val %lu \n", imm_val);
-      tree result2 = wide_int_to_tree(elems_type, imm_val);
-
-      result_stmt = gimple_build_assign (mult, MULT_EXPR, gphi_res, result2);
+      result_stmt = gimple_build_assign (mult, MULT_EXPR, gphi_res,
+					 result_imm_tree);
       SSA_NAME_DEF_STMT (mult) = result_stmt;
     }
 
@@ -2963,6 +2961,8 @@ block_has_single_assignment (basic_block bb)
 static bool
 canonicalize_conditional_op (basic_block middle1, gphi *phi)
 {
+  unsigned HOST_WIDE_INT imm_val;
+
   /* Limit the number of phi nodes to 2.   */
   if (EDGE_COUNT (phi->bb->preds) != 2)
     return false;
@@ -2977,7 +2977,9 @@ canonicalize_conditional_op (basic_block middle1, gphi *phi)
   if (gimple_assign_rhs_class (op1_stmt) != GIMPLE_BINARY_RHS)
     return false;
 
-  return move_conditional_ops (op1_stmt, NULL, phi, NULL);
+  imm_val = TREE_INT_CST_LOW (gimple_assign_rhs2 (op1_stmt));
+
+  return move_conditional_ops (op1_stmt, NULL, phi, imm_val);
 }
 
 
@@ -3067,8 +3069,8 @@ canonicalize_conditional_bitops (basic_block middle1,
 
   /* Calculate the shift immediate from the constants found
      in ior_stmt and and_stmt.  */
-  tree bitop_shift = bitops_uses_same_shift_imm (ior_stmt, and_stmt);
-  if (bitop_shift == NULL)
+  int bitop_shift = bitops_uses_same_shift_imm (ior_stmt, and_stmt);
+  if (bitop_shift < 0)
     return false;
 
   return move_conditional_ops (ior_stmt, and_stmt, phi, bitop_shift);
