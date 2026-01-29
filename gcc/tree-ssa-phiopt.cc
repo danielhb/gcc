@@ -2712,8 +2712,11 @@ cond_removal_in_builtin_zero_pattern (basic_block cond_bb,
    above, 20), or -1 if none found.  */
 
 static int
-bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
+bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED gimple *and_stmt)
 {
+  return false;
+
+#if 0
   HOST_WIDE_INT ior_imm_val;
   tree rhs1 = gimple_assign_rhs1 (ior_stmt);
   tree rhs2 = gimple_assign_rhs2 (ior_stmt);
@@ -2755,6 +2758,10 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
   else
     return -1;
 
+  HOST_WIDE_INT and_imm_val_check = TREE_INT_CST_LOW (and_imm);
+  if (and_imm_val_check < 0)
+    return -1;
+
   unsigned HOST_WIDE_INT and_imm_val = TREE_INT_CST_LOW (and_imm);
   unsigned HOST_WIDE_INT cond_mask = GET_MODE_MASK (
 					TYPE_MODE (TREE_TYPE (and_imm)));
@@ -2764,6 +2771,7 @@ bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
   }
 
   return wi::ctz (ior_imm_val);
+#endif
 }
 
 /* Helper function for canonicalize_conditional_*.  'op1_stmt' is
@@ -2879,7 +2887,7 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
   update_stmt (op1_stmt);
 
   /* Replace all uses of the old phi result with the
-     ior_stmt LHS, with the exception of result_stmt  */
+     op1_stmt LHS, with the exception of result_stmt  */
   gimple *stmt;
   use_operand_p use_p;
   imm_use_iterator iterator;
@@ -2888,7 +2896,7 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
       if (stmt == result_stmt)
 	continue;
       FOR_EACH_IMM_USE_ON_STMT (use_p, iterator)
-	SET_USE (use_p, gimple_get_lhs (result_stmt));
+	SET_USE (use_p, gimple_get_lhs (op1_stmt));
 
       update_stmt (stmt);
     }
@@ -2955,8 +2963,6 @@ block_has_single_assignment (basic_block bb)
 static bool
 canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNUSED gphi *phi)
 {
-  return false;
-#if 0
   /* Limit the number of phi nodes to 2.   */
   if (EDGE_COUNT (phi->bb->preds) != 2)
     return false;
@@ -2979,8 +2985,8 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
       case BIT_IOR_EXPR:
       case LSHIFT_EXPR:
       case RSHIFT_EXPR:
-      // case PLUS_EXPR:
-      // case MINUS_EXPR:
+      case PLUS_EXPR:
+      case MINUS_EXPR:
 	break;
       default:
         return false;
@@ -2995,9 +3001,10 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
     return false;
 
   HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
+  //if (imm_val < 0)
+    //return false;
 
   return move_conditional_ops (op1_stmt, NULL, phi, imm_val);
-#endif
 }
 
 
