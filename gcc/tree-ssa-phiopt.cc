@@ -2996,18 +2996,6 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
   if (gimple_assign_rhs_class (op1_stmt) != GIMPLE_BINARY_RHS)
     return false;
 
-  switch (gimple_assign_rhs_code (op1_stmt))
-    {
-      case BIT_IOR_EXPR:
-      case LSHIFT_EXPR:
-      case RSHIFT_EXPR:
-      case PLUS_EXPR:
-      case MINUS_EXPR:
-	break;
-      default:
-        return false;
-    }
-
   tree rhs1 = gimple_assign_rhs1 (op1_stmt);
   tree rhs2 = gimple_assign_rhs2 (op1_stmt);
   if (TREE_CODE (rhs1) != SSA_NAME
@@ -3015,6 +3003,20 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
       || !INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
       || !INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
     return false;
+
+  switch (gimple_assign_rhs_code (op1_stmt))
+    {
+      case BIT_IOR_EXPR:
+      case BIT_XOR_EXPR:
+      case LSHIFT_EXPR:
+      case RSHIFT_EXPR:
+      // case PLUS_EXPR:
+      // case MINUS_EXPR:
+	break;
+      default:
+        return false;
+    }
+
 
   HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
 
