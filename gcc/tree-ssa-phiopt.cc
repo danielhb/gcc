@@ -3017,8 +3017,32 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
     return false;
 
   HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
-  //if (imm_val < 0)
-    //return false;
+
+  /*  This imm_val <= 0 check seems to avoid the following bootstrap error:
+ 
+  NU_S
+    OURCE -fcf-protection  ../../libiberty/getpwd.c -o getpwd.o
+    ../../libiberty/regex.c: In function ‘byte_re_match_2_internal’:
+    ../../libiberty/regex.c:394:30: error: too many arguments to function ‘malloc’; expected 0, have 1
+      394 | # define TALLOC(n, t) ((t *) malloc ((n) * sizeof (t)))
+          |                              ^~~~~~  ~~~~~~~~~~~~~~~~
+    ../../libiberty/regex.c:5992:33: note: in expansion of macro ‘TALLOC’
+     5992 |                   regs->start = TALLOC (regs->num_regs, regoff_t);
+          |                                 ^~~~~~
+    ../../libiberty/regex.c:135:7: note: declared here
+      135 | char *malloc ();
+          |       ^~~~~~
+    ../../libiberty/regex.c:394:30: error: too many arguments to function ‘malloc’; expected 0, have 1
+      394 | # define TALLOC(n, t) ((t *) malloc ((n) * sizeof (t)))
+          |                              ^~~~~~  ~~~~~~~~~~~~~~~~
+    ../../libiberty/regex.c:5993:31: note: in expansion of macro ‘TALLOC’
+     5993 |                   regs->end = TALLOC (regs->num_regs, regoff_t);
+          |                               ^~~~~~
+    ../../libiberty/regex.c:135:7: note: declared here
+      135 | char *malloc ();
+     */
+  if (imm_val <= 0)
+    return false;
 
   return move_conditional_ops (op1_stmt, NULL, phi, imm_val);
 }
