@@ -2924,26 +2924,20 @@ during GIMPLE pass: phiopt
   gsi_insert_after (&gsi, cast_stmt, GSI_SAME_STMT);
 
   /* Replace all uses of the old phi result with gphi_replace,
-     for all stms appearing after cast_stmt.  */
+     skipping any debug stmts and result_stmt itself.  */
   gimple *stmt;
   use_operand_p use_p;
   imm_use_iterator iterator;
-  bool replace = false;
   FOR_EACH_IMM_USE_STMT (stmt, iterator, gphi_res)
     {
-      if (stmt == cast_stmt)
-      {
-	replace = true;
+      if (is_gimple_debug (stmt)
+	  || stmt == result_stmt)
 	continue;
-      }
 
-      if (replace)
-        {
-          FOR_EACH_IMM_USE_ON_STMT (use_p, iterator)
-	    SET_USE (use_p, gphi_replace);
-	
-	  update_stmt (stmt);
-	}
+      FOR_EACH_IMM_USE_ON_STMT (use_p, iterator)
+	SET_USE (use_p, gphi_replace);
+
+      update_stmt (stmt);
     }
 
   return true;
