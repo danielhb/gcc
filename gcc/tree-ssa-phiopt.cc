@@ -2714,10 +2714,7 @@ cond_removal_in_builtin_zero_pattern (basic_block cond_bb,
 static int
 bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED gimple *and_stmt)
 {
-  return -1;
-
-#if 0
-  HOST_WIDE_INT ior_imm_val;
+  unsigned HOST_WIDE_INT ior_imm_val;
   tree rhs1 = gimple_assign_rhs1 (ior_stmt);
   tree rhs2 = gimple_assign_rhs2 (ior_stmt);
   tree ssa_name, ior_imm, and_imm;
@@ -2736,8 +2733,8 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
   ior_imm_val = TREE_INT_CST_LOW (ior_imm);
 
   /* Do not try to deal with negative immediates.  */
-  if (ior_imm_val < 0)
-    return -1;
+  // if (ior_imm_val < 0)
+  //  return -1;
 
   if (popcount_hwi (ior_imm_val) != 1)
     return -1;
@@ -2758,10 +2755,6 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
   else
     return -1;
 
-  HOST_WIDE_INT and_imm_val_check = TREE_INT_CST_LOW (and_imm);
-  if (and_imm_val_check < 0)
-    return -1;
-
   unsigned HOST_WIDE_INT and_imm_val = TREE_INT_CST_LOW (and_imm);
   unsigned HOST_WIDE_INT cond_mask = GET_MODE_MASK (
 					TYPE_MODE (TREE_TYPE (and_imm)));
@@ -2771,7 +2764,6 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
   }
 
   return wi::ctz (ior_imm_val);
-#endif
 }
 
 /* Helper function for canonicalize_conditional_*.  'op1_stmt' is
@@ -2835,6 +2827,7 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
   gimple *result_stmt;
   if (op2_stmt)
     {
+#if 0
       tree zero_set = make_ssa_name (elems_type);
       gimple *zero_stmt = gimple_build_assign (zero_set,
 					wide_int_to_tree (elems_type, 0));
@@ -2842,9 +2835,13 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
 
       gsi = gsi_for_stmt (op2_stmt);
       gsi_insert_after (&gsi, zero_stmt, GSI_SAME_STMT);
+#endif
+      e = single_succ_edge (op2_stmt->bb);
+      SET_PHI_ARG_DEF (phi, e->dest_idx,
+		       wide_int_to_tree (elems_type, 0));
 
-      e = single_succ_edge (zero_stmt->bb);
-      SET_PHI_ARG_DEF (phi, e->dest_idx, zero_set);
+      // e = single_succ_edge (zero_stmt->bb);
+      // SET_PHI_ARG_DEF (phi, e->dest_idx, zero_set);
 
       /* Create a LSHIFT stmt that uses the phi result and
 	 the bitop shift.  */
@@ -3011,6 +3008,8 @@ block_has_single_assignment (basic_block bb)
 static bool
 canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNUSED gphi *phi)
 {
+  return false;
+#if 0
   /* Limit the number of phi nodes to 2.   */
   if (EDGE_COUNT (phi->bb->preds) != 2)
     return false;
@@ -3078,6 +3077,7 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
     // return false;
 
   return move_conditional_ops (op1_stmt, NULL, phi, imm_val);
+#endif
 }
 
 
