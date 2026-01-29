@@ -2714,7 +2714,7 @@ cond_removal_in_builtin_zero_pattern (basic_block cond_bb,
 static int
 bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED gimple *and_stmt)
 {
-  return false;
+  return -1;
 
 #if 0
   HOST_WIDE_INT ior_imm_val;
@@ -2795,9 +2795,11 @@ static bool
 move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
 		      gphi *phi, int result_imm)
 {
-  tree elems_type = TREE_TYPE (gimple_assign_lhs (op1_stmt));
+  tree gphi_res = gimple_phi_result (phi);
+  tree elems_type = TREE_TYPE (gphi_res);
   gimple_stmt_iterator gsi;
 
+#if 0
   /* Create a "ssa1 = 1" stmt in the op1_stmt block.
     Set the PHI node for that block to 1.  */
   tree one_set = make_ssa_name (elems_type);
@@ -2810,6 +2812,11 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
 
   edge e = single_succ_edge (one_stmt->bb);
   SET_PHI_ARG_DEF (phi, e->dest_idx, one_set);
+#endif 
+  /* Just set the adequate PHI node with "1".  */
+  edge e = single_succ_edge (op1_stmt->bb);
+  SET_PHI_ARG_DEF (phi, e->dest_idx,
+	           wide_int_to_tree (elems_type, 1));
 
   /* If we have an OP2 (i.e. this is the IOR/AND diamond pattern):
      - Create a "ssa1 = 0" stmt in the op2_stmt block
@@ -2822,7 +2829,6 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
      - result_stmt is a MULT stmt that uses the phi result and
        op1_imm.  */
 
-  tree gphi_res = gimple_phi_result (phi);
   tree result_imm_tree = wide_int_to_tree (elems_type, result_imm);
   gimple *result_stmt;
   if (op2_stmt)
@@ -2886,6 +2892,16 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
     gimple_assign_set_rhs1 (op1_stmt, gimple_assign_lhs (op2_stmt));
   update_stmt (op1_stmt);
 
+  /* We'll have to replace all gphi_res instances.  Ideally
+     we could just use op1_stmt LHS, but create a new var
+     with gphi_res type and use it instead.  */
+  tree gphi_replace = make_ssa_name (elems_type, NULL);
+  gassign *cast_stmt = gimple_build_assign (gphi_replace,
+               fold_build1 (VIEW_CONVERT_EXPR, elems_type,
+		            gimple_get_lhs (op1_stmt)));
+  gsi = gsi_for_stmt (op1_stmt);
+  gsi_insert_after (&gsi, cast_stmt, GSI_SAME_STMT);
+
   /* Replace all uses of the old phi result with the
      op1_stmt LHS, with the exception of result_stmt  */
   gimple *stmt;
@@ -2896,7 +2912,7 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
       if (stmt == result_stmt)
 	continue;
       FOR_EACH_IMM_USE_ON_STMT (use_p, iterator)
-	SET_USE (use_p, gimple_get_lhs (op1_stmt));
+	SET_USE (use_p, gphi_replace);
 
       update_stmt (stmt);
     }
@@ -3095,7 +3111,7 @@ canonicalize_conditional_bitops (basic_block middle1,
   /* Calculate the shift immediate from the constants found
      in ior_stmt and and_stmt.  */
   int bitop_shift = bitops_uses_same_shift_imm (ior_stmt, and_stmt);
-  if (bitop_shift < 0)
+  if (bitop_shift <= 0)
     return false;
 
   return move_conditional_ops (ior_stmt, and_stmt, phi, bitop_shift);
