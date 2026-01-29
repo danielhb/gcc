@@ -2812,7 +2812,8 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
 
   edge e = single_succ_edge (one_stmt->bb);
   SET_PHI_ARG_DEF (phi, e->dest_idx, one_set);
-#endif 
+#endif
+
   /* Just set the adequate PHI node with "1".  */
   edge e = single_succ_edge (op1_stmt->bb);
   SET_PHI_ARG_DEF (phi, e->dest_idx,
@@ -2863,6 +2864,26 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
       SSA_NAME_DEF_STMT (mult) = result_stmt;
     }
 
+  /* tentando driblar o seguinte erro: 
+  
+ mv -f .deps/libz_a-zutil.Tpo .deps/libz_a-zutil.Po
+mv -f .deps/libz_a-uncompr.Tpo .deps/libz_a-uncompr.Po
+yes
+checking what to include in gstdint.h... uint64_t
+stdint.h (already complete)
+checking for intptr_t... checking sys/mman.h usability... ../../zlib/deflate.c: In function 'longest_match':
+../../zlib/deflate.c:2139:1: error: definition in block 6 follows the use
+ 2139 | }
+      | ^
+for SSA_NAME: _8 in statement:
+# DEBUG chain_length => _8
+during GIMPLE pass: phiopt
+../../zlib/deflate.c:2139:1: internal compiler error: verify_ssa failed
+ 
+  */
+  // gsi = gsi_start_nondebug_after_labels_bb (phi->bb) ;
+  // gsi = gsi_after_labels (phi->bb) ;
+
   /* Move result_stmt, op2_stmt if applicable and op1_stmt.
      op2_stmt must come before op1_stmt.  */
   gsi = gsi_start_nondebug_after_labels_bb (phi->bb) ;
@@ -2899,22 +2920,32 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
   gassign *cast_stmt = gimple_build_assign (gphi_replace,
                fold_build1 (VIEW_CONVERT_EXPR, elems_type,
 		            gimple_get_lhs (op1_stmt)));
+  SSA_NAME_DEF_STMT (gphi_replace) = cast_stmt;
+
   gsi = gsi_for_stmt (op1_stmt);
   gsi_insert_after (&gsi, cast_stmt, GSI_SAME_STMT);
 
-  /* Replace all uses of the old phi result with the
-     op1_stmt LHS, with the exception of result_stmt  */
+  /* Replace all uses of the old phi result with gphi_replace,
+     for all stms appearing after cast_stmt.  */
   gimple *stmt;
   use_operand_p use_p;
   imm_use_iterator iterator;
+  bool replace = false;
   FOR_EACH_IMM_USE_STMT (stmt, iterator, gphi_res)
     {
-      if (stmt == result_stmt)
+      if (stmt == cast_stmt)
+      {
+	replace = true;
 	continue;
-      FOR_EACH_IMM_USE_ON_STMT (use_p, iterator)
-	SET_USE (use_p, gphi_replace);
+      }
 
-      update_stmt (stmt);
+      if (replace)
+        {
+          FOR_EACH_IMM_USE_ON_STMT (use_p, iterator)
+	    SET_USE (use_p, gphi_replace);
+	
+	  update_stmt (stmt);
+	}
     }
 
   return true;
@@ -3006,8 +3037,8 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
 
   switch (gimple_assign_rhs_code (op1_stmt))
     {
-      case BIT_IOR_EXPR:
-      case BIT_XOR_EXPR:
+      // case BIT_IOR_EXPR:
+      // case BIT_XOR_EXPR:
       case LSHIFT_EXPR:
       case RSHIFT_EXPR:
       // case PLUS_EXPR:
