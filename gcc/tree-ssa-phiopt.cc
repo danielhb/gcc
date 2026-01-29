@@ -2793,7 +2793,8 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
 
 static bool
 move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
-		      gphi *phi, int result_imm)
+		      gphi *phi,
+		      unsigned HOST_WIDE_INT result_imm)
 {
   tree gphi_res = gimple_phi_result (phi);
   tree elems_type = TREE_TYPE (gphi_res);
@@ -3038,9 +3039,9 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
   switch (gimple_assign_rhs_code (op1_stmt))
     {
       // case BIT_IOR_EXPR:
-      // case BIT_XOR_EXPR:
-      case LSHIFT_EXPR:
-      case RSHIFT_EXPR:
+      case BIT_XOR_EXPR:
+      // case LSHIFT_EXPR:
+      // case RSHIFT_EXPR:
       // case PLUS_EXPR:
       // case MINUS_EXPR:
 	break;
@@ -3048,8 +3049,7 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
         return false;
     }
 
-
-  HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
+  unsigned HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
 
   /*  This imm_val <= 0 check seems to avoid the following bootstrap error:
  
@@ -3074,8 +3074,8 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
     ../../libiberty/regex.c:135:7: note: declared here
       135 | char *malloc ();
      */
-  if (imm_val <= 0)
-    return false;
+  // if (imm_val <= 0)
+    // return false;
 
   return move_conditional_ops (op1_stmt, NULL, phi, imm_val);
 }
