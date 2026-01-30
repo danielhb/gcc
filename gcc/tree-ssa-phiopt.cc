@@ -2711,7 +2711,7 @@ cond_removal_in_builtin_zero_pattern (basic_block cond_bb,
    Return the common shift immediate from both (in the
    above, 20), or -1 if none found.  */
 
-static int
+static unsigned HOST_WIDE_INT
 bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED gimple *and_stmt)
 {
   unsigned HOST_WIDE_INT ior_imm_val;
@@ -2728,16 +2728,9 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
       ior_imm = rhs2;
     }
   else
-    return -1;
+    return 0;
 
   ior_imm_val = TREE_INT_CST_LOW (ior_imm);
-
-  /* Do not try to deal with negative immediates.  */
-  // if (ior_imm_val < 0)
-  //  return -1;
-
-  if (popcount_hwi (ior_imm_val) != 1)
-    return -1;
 
   rhs1 = gimple_assign_rhs1 (and_stmt);
   rhs2 = gimple_assign_rhs2 (and_stmt);
@@ -2748,22 +2741,22 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
       && INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
     {
       if (rhs1 != ssa_name)
-	return -1;
+	return 0;
 
       and_imm = rhs2;
     }
   else
-    return -1;
+    return 0;
 
   unsigned HOST_WIDE_INT and_imm_val = TREE_INT_CST_LOW (and_imm);
   unsigned HOST_WIDE_INT cond_mask = GET_MODE_MASK (
 					TYPE_MODE (TREE_TYPE (and_imm)));
 
   if (!((cond_mask & ~ior_imm_val) == and_imm_val)) {
-    return -1;
+    return 0;
   }
 
-  return wi::ctz (ior_imm_val);
+  return ior_imm_val;
 }
 
 /* Helper function for canonicalize_conditional_*.  'op1_stmt' is
@@ -2844,11 +2837,13 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
       // SET_PHI_ARG_DEF (phi, e->dest_idx, zero_set);
 
       /* Create a LSHIFT stmt that uses the phi result and
-	 the bitop shift.  */
-      tree lshift = make_ssa_name (elems_type);
-      result_stmt = gimple_build_assign (lshift, LSHIFT_EXPR, gphi_res,
-					 result_imm_tree);
-      SSA_NAME_DEF_STMT (lshift) = result_stmt;
+	 the bitop shift.
+	 
+	 NOTE: now using MULT like the non-diamond case.  */
+      // tree lshift = make_ssa_name (elems_type);
+      //result_stmt = gimple_build_assign (lshift, LSHIFT_EXPR, gphi_res,
+					 // result_imm_tree);
+      // SSA_NAME_DEF_STMT (lshift) = result_stmt;
     }
   else
     {
@@ -2856,31 +2851,17 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
       SET_PHI_ARG_DEF (phi, e->dest_idx,
 		       wide_int_to_tree (elems_type, 0));
 
-      tree mult = make_ssa_name (elems_type);
-      result_stmt = gimple_build_assign (mult, MULT_EXPR, gphi_res,
-					 result_imm_tree);
-      SSA_NAME_DEF_STMT (mult) = result_stmt;
+      /* NOTE: now MULT is used in both supported patterns.  */
+      //tree mult = make_ssa_name (elems_type);
+      //result_stmt = gimple_build_assign (mult, MULT_EXPR, gphi_res,
+//					 result_imm_tree);
+  //    SSA_NAME_DEF_STMT (mult) = result_stmt;
     }
 
-  /* tentando driblar o seguinte erro: 
-  
- mv -f .deps/libz_a-zutil.Tpo .deps/libz_a-zutil.Po
-mv -f .deps/libz_a-uncompr.Tpo .deps/libz_a-uncompr.Po
-yes
-checking what to include in gstdint.h... uint64_t
-stdint.h (already complete)
-checking for intptr_t... checking sys/mman.h usability... ../../zlib/deflate.c: In function 'longest_match':
-../../zlib/deflate.c:2139:1: error: definition in block 6 follows the use
- 2139 | }
-      | ^
-for SSA_NAME: _8 in statement:
-# DEBUG chain_length => _8
-during GIMPLE pass: phiopt
-../../zlib/deflate.c:2139:1: internal compiler error: verify_ssa failed
- 
-  */
-  // gsi = gsi_start_nondebug_after_labels_bb (phi->bb) ;
-  // gsi = gsi_after_labels (phi->bb) ;
+  tree mult = make_ssa_name (elems_type);
+  result_stmt = gimple_build_assign (mult, MULT_EXPR, gphi_res,
+				     result_imm_tree);
+  SSA_NAME_DEF_STMT (mult) = result_stmt;
 
   /* Move result_stmt, op2_stmt if applicable and op1_stmt.
      op2_stmt must come before op1_stmt.  */
@@ -3119,6 +3100,7 @@ canonicalize_conditional_bitops (basic_block middle1,
 			         gphi *phi)
 {
   gimple *ior_stmt = NULL, *and_stmt = NULL;
+  unsigned HOST_WIDE_INT bitop_shift;
 
   /* Limit the number of phi nodes to 2.   */
   if (EDGE_COUNT (phi->bb->preds) != 2)
@@ -3161,8 +3143,8 @@ canonicalize_conditional_bitops (basic_block middle1,
 
   /* Calculate the shift immediate from the constants found
      in ior_stmt and and_stmt.  */
-  int bitop_shift = bitops_uses_same_shift_imm (ior_stmt, and_stmt);
-  if (bitop_shift <= 0)
+  bitop_shift = bitops_uses_same_shift_imm (ior_stmt, and_stmt);
+  if (bitop_shift == 0)
     return false;
 
   return move_conditional_ops (ior_stmt, and_stmt, phi, bitop_shift);
