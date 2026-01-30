@@ -2714,6 +2714,9 @@ cond_removal_in_builtin_zero_pattern (basic_block cond_bb,
 static unsigned HOST_WIDE_INT
 bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED gimple *and_stmt)
 {
+  return 0;
+
+#if 0
   unsigned HOST_WIDE_INT ior_imm_val;
   tree rhs1 = gimple_assign_rhs1 (ior_stmt);
   tree rhs2 = gimple_assign_rhs2 (ior_stmt);
@@ -2757,6 +2760,7 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
   }
 
   return ior_imm_val;
+#endif
 }
 
 /* Helper function for canonicalize_conditional_*.  'op1_stmt' is
