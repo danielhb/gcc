@@ -2714,10 +2714,7 @@ cond_removal_in_builtin_zero_pattern (basic_block cond_bb,
 static unsigned HOST_WIDE_INT
 bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED gimple *and_stmt)
 {
-  return 0;
-
-#if 0
-  unsigned HOST_WIDE_INT ior_imm_val;
+  unsigned HOST_WIDE_INT ior_imm_val, and_imm_val, cond_mask;
   tree rhs1 = gimple_assign_rhs1 (ior_stmt);
   tree rhs2 = gimple_assign_rhs2 (ior_stmt);
   tree ssa_name, ior_imm, and_imm;
@@ -2732,8 +2729,6 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
     }
   else
     return 0;
-
-  ior_imm_val = TREE_INT_CST_LOW (ior_imm);
 
   rhs1 = gimple_assign_rhs1 (and_stmt);
   rhs2 = gimple_assign_rhs2 (and_stmt);
@@ -2751,16 +2746,15 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
   else
     return 0;
 
-  unsigned HOST_WIDE_INT and_imm_val = TREE_INT_CST_LOW (and_imm);
-  unsigned HOST_WIDE_INT cond_mask = GET_MODE_MASK (
-					TYPE_MODE (TREE_TYPE (and_imm)));
+  ior_imm_val = TREE_INT_CST_LOW (ior_imm);
+  and_imm_val = TREE_INT_CST_LOW (and_imm);
+  cond_mask = GET_MODE_MASK (TYPE_MODE (TREE_TYPE (and_imm)));
 
   if (!((cond_mask & ~ior_imm_val) == and_imm_val)) {
     return 0;
   }
 
   return ior_imm_val;
-#endif
 }
 
 /* Helper function for canonicalize_conditional_*.  'op1_stmt' is
@@ -2788,83 +2782,53 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
   tree gphi_res = gimple_phi_result (phi);
   tree elems_type = TREE_TYPE (gphi_res);
   gimple_stmt_iterator gsi;
+  edge e;
 
-#if 0
-  /* Create a "ssa1 = 1" stmt in the op1_stmt block.
-    Set the PHI node for that block to 1.  */
-  tree one_set = make_ssa_name (elems_type);
-  gimple *one_stmt = gimple_build_assign (one_set,
-					  wide_int_to_tree (elems_type, 1));
-  SSA_NAME_DEF_STMT (one_set) = one_stmt;
-
-  gsi = gsi_for_stmt (op1_stmt);
-  gsi_insert_after (&gsi, one_stmt, GSI_SAME_STMT);
-
-  edge e = single_succ_edge (one_stmt->bb);
-  SET_PHI_ARG_DEF (phi, e->dest_idx, one_set);
-#endif
-
-  /* Just set the adequate PHI node with "1".  */
-  edge e = single_succ_edge (op1_stmt->bb);
-  SET_PHI_ARG_DEF (phi, e->dest_idx,
-	           wide_int_to_tree (elems_type, 1));
-
-  /* If we have an OP2 (i.e. this is the IOR/AND diamond pattern):
-     - Create a "ssa1 = 0" stmt in the op2_stmt block
-     - Set the PHI node for that block to 0
-     - result_stmt is a LSHIFT stmt that uses the phi result and
-       the bitop shift
-
-     Otherwise:
-     - Set the PHI node of the cond_block to 0
-     - result_stmt is a MULT stmt that uses the phi result and
-       op1_imm.  */
-
-  tree result_imm_tree = wide_int_to_tree (elems_type, result_imm);
-  gimple *result_stmt;
+  /* For the diamond case we support, op1_stmt always come from
+     the TRUE edge of cond_bb and op2_stmt always come from the
+     FALSE edge.  */
   if (op2_stmt)
     {
-#if 0
-      tree zero_set = make_ssa_name (elems_type);
-      gimple *zero_stmt = gimple_build_assign (zero_set,
-					wide_int_to_tree (elems_type, 0));
-      SSA_NAME_DEF_STMT (zero_set) = zero_stmt;
-
-      gsi = gsi_for_stmt (op2_stmt);
-      gsi_insert_after (&gsi, zero_stmt, GSI_SAME_STMT);
-#endif
+      e = single_succ_edge (op1_stmt->bb);
+      SET_PHI_ARG_DEF (phi, e->dest_idx,
+		       wide_int_to_tree (elems_type, 1));
       e = single_succ_edge (op2_stmt->bb);
       SET_PHI_ARG_DEF (phi, e->dest_idx,
 		       wide_int_to_tree (elems_type, 0));
-
-      // e = single_succ_edge (zero_stmt->bb);
-      // SET_PHI_ARG_DEF (phi, e->dest_idx, zero_set);
-
-      /* Create a LSHIFT stmt that uses the phi result and
-	 the bitop shift.
-	 
-	 NOTE: now using MULT like the non-diamond case.  */
-      // tree lshift = make_ssa_name (elems_type);
-      //result_stmt = gimple_build_assign (lshift, LSHIFT_EXPR, gphi_res,
-					 // result_imm_tree);
-      // SSA_NAME_DEF_STMT (lshift) = result_stmt;
     }
   else
     {
-      e = single_pred_edge (op1_stmt->bb);
-      SET_PHI_ARG_DEF (phi, e->dest_idx,
-		       wide_int_to_tree (elems_type, 0));
+      edge true_edge, false_edge;
+      basic_block cond_bb;
 
-      /* NOTE: now MULT is used in both supported patterns.  */
-      //tree mult = make_ssa_name (elems_type);
-      //result_stmt = gimple_build_assign (mult, MULT_EXPR, gphi_res,
-//					 result_imm_tree);
-  //    SSA_NAME_DEF_STMT (mult) = result_stmt;
+      e = single_pred_edge (op1_stmt->bb);
+      cond_bb = e->src;
+      extract_true_false_edges_from_block (cond_bb, &true_edge, &false_edge);
+
+      e = single_succ_edge (op1_stmt->bb);
+      if (true_edge->dest == op1_stmt->bb)
+	{
+	  SET_PHI_ARG_DEF (phi, e->dest_idx,
+			   wide_int_to_tree (elems_type, 1));
+	
+	  SET_PHI_ARG_DEF (phi, false_edge->dest_idx,
+			   wide_int_to_tree (elems_type, 0));
+	}
+      else
+	{
+	  SET_PHI_ARG_DEF (phi, e->dest_idx,
+			   wide_int_to_tree (elems_type, 0));
+	
+	  SET_PHI_ARG_DEF (phi, true_edge->dest_idx,
+			   wide_int_to_tree (elems_type, 1));
+	}
     }
 
+  tree result_imm_tree = wide_int_to_tree (elems_type, result_imm);
+
   tree mult = make_ssa_name (elems_type);
-  result_stmt = gimple_build_assign (mult, MULT_EXPR, gphi_res,
-				     result_imm_tree);
+  gimple *result_stmt = gimple_build_assign (mult, MULT_EXPR, gphi_res,
+					     result_imm_tree);
   SSA_NAME_DEF_STMT (mult) = result_stmt;
 
   /* Move result_stmt, op2_stmt if applicable and op1_stmt.
@@ -2987,8 +2951,6 @@ block_has_single_assignment (basic_block bb)
 static bool
 canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNUSED gphi *phi)
 {
-  return false;
-#if 0
   /* Limit the number of phi nodes to 2.   */
   if (EDGE_COUNT (phi->bb->preds) != 2)
     return false;
@@ -3016,10 +2978,10 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
 
   switch (gimple_assign_rhs_code (op1_stmt))
     {
-      // case BIT_IOR_EXPR:
+      case BIT_IOR_EXPR:
       case BIT_XOR_EXPR:
-      // case LSHIFT_EXPR:
-      // case RSHIFT_EXPR:
+      case LSHIFT_EXPR:
+      case RSHIFT_EXPR:
       // case PLUS_EXPR:
       // case MINUS_EXPR:
 	break;
@@ -3029,34 +2991,7 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
 
   unsigned HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
 
-  /*  This imm_val <= 0 check seems to avoid the following bootstrap error:
- 
-  NU_S
-    OURCE -fcf-protection  ../../libiberty/getpwd.c -o getpwd.o
-    ../../libiberty/regex.c: In function ‘byte_re_match_2_internal’:
-    ../../libiberty/regex.c:394:30: error: too many arguments to function ‘malloc’; expected 0, have 1
-      394 | # define TALLOC(n, t) ((t *) malloc ((n) * sizeof (t)))
-          |                              ^~~~~~  ~~~~~~~~~~~~~~~~
-    ../../libiberty/regex.c:5992:33: note: in expansion of macro ‘TALLOC’
-     5992 |                   regs->start = TALLOC (regs->num_regs, regoff_t);
-          |                                 ^~~~~~
-    ../../libiberty/regex.c:135:7: note: declared here
-      135 | char *malloc ();
-          |       ^~~~~~
-    ../../libiberty/regex.c:394:30: error: too many arguments to function ‘malloc’; expected 0, have 1
-      394 | # define TALLOC(n, t) ((t *) malloc ((n) * sizeof (t)))
-          |                              ^~~~~~  ~~~~~~~~~~~~~~~~
-    ../../libiberty/regex.c:5993:31: note: in expansion of macro ‘TALLOC’
-     5993 |                   regs->end = TALLOC (regs->num_regs, regoff_t);
-          |                               ^~~~~~
-    ../../libiberty/regex.c:135:7: note: declared here
-      135 | char *malloc ();
-     */
-  // if (imm_val <= 0)
-    // return false;
-
   return move_conditional_ops (op1_stmt, NULL, phi, imm_val);
-#endif
 }
 
 
@@ -3143,6 +3078,11 @@ canonicalize_conditional_bitops (basic_block middle1,
 
   /* We need both ior_stmt and and_stmt.  */
   if (!ior_stmt || !and_stmt)
+    return false;
+
+  /* Check if ior_stmt is coming from the TRUE edge of cond_bb.  */
+  edge e = single_pred_edge (ior_stmt->bb);
+  if (!(e->flags & EDGE_TRUE_VALUE))
     return false;
 
   /* Calculate the shift immediate from the constants found
