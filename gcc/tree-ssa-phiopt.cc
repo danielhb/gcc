@@ -3110,6 +3110,20 @@ canonicalize_conditional_bitops (basic_block middle1,
     if (!(e->flags & EDGE_FALLTHRU))
       return false;
 
+  /* gphi result must have a single nondebug use.  */
+  tree gphi_res = gimple_phi_result (phi);
+  int uses = 0;
+  for (gimple *use_stmt : gather_imm_use_stmts (gphi_res))
+    {
+      if (uses == 1)
+        return false;
+      
+      if (!is_gimple_assign (use_stmt) && use_stmt->code != GIMPLE_RETURN)
+        return false;
+
+      uses++;
+    }
+
   /* Check if the middle blocks has a single stmt (either
      an IOR or an AND) or a single stmt + a goto.  */
   gimple *stmt = block_has_single_assignment(middle1);
