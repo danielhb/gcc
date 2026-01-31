@@ -2730,7 +2730,10 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
   if (TREE_CODE (rhs1) == SSA_NAME
       && TREE_CODE (rhs2) == INTEGER_CST
       && move_cond_bitops_val_type (TREE_TYPE (rhs1))
-      && move_cond_bitops_val_type (TREE_TYPE (rhs2)))
+      && move_cond_bitops_val_type (TREE_TYPE (rhs2))
+      && TYPE_UNSIGNED (TREE_TYPE (rhs1))
+      && TYPE_UNSIGNED (TREE_TYPE (rhs2))
+      && TYPE_UNSIGNED (TREE_TYPE (gimple_assign_lhs (ior_stmt))))
     {
       ssa_name = rhs1;
       ior_imm = rhs2;
@@ -2744,7 +2747,10 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
   if (TREE_CODE (rhs1) == SSA_NAME
       && TREE_CODE (rhs2) == INTEGER_CST
       && move_cond_bitops_val_type (TREE_TYPE (rhs1))
-      && move_cond_bitops_val_type (TREE_TYPE (rhs2)))
+      && move_cond_bitops_val_type (TREE_TYPE (rhs2))
+      && TYPE_UNSIGNED (TREE_TYPE (rhs1))
+      && TYPE_UNSIGNED (TREE_TYPE (rhs2))
+      && TYPE_UNSIGNED (TREE_TYPE (gimple_assign_lhs (and_stmt))))
     {
       if (rhs1 != ssa_name)
 	return 0;
@@ -2763,13 +2769,13 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
   if (TYPE_PRECISION (TREE_TYPE (and_imm)) >= TYPE_PRECISION (TREE_TYPE (ior_imm)))
     {
       cond_mask = GET_MODE_MASK (TYPE_MODE (TREE_TYPE (and_imm)));
-      if (!((cond_mask & ~ior_imm_val) == and_imm_val))
+      if ((cond_mask & ~ior_imm_val) != and_imm_val)
         return 0;
     }
   else
     {
       cond_mask = GET_MODE_MASK (TYPE_MODE (TREE_TYPE (ior_imm)));
-      if (!((cond_mask & ~and_imm_val) == ior_imm_val))
+      if ((cond_mask & ~and_imm_val) != ior_imm_val)
         return 0;
     }
 
@@ -2816,68 +2822,51 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
   gimple_stmt_iterator gsi;
   edge e;
 
-  /* For the diamond case we support, op1_stmt always come from
-     the TRUE edge of cond_bb and op2_stmt always come from the
-     FALSE edge.  */
+  /* "ssa = 1" stmt to be placed in the op1_stmt bb.
+     Update phi accordingly.  */
+  tree one_set = make_ssa_name (elems_type);
+  gimple *one_stmt = gimple_build_assign (one_set,
+					  wide_int_to_tree (elems_type, 1));
+  SSA_NAME_DEF_STMT (one_set) = one_stmt;
+
+  gsi = gsi_for_stmt (op1_stmt);
+  gsi_insert_after (&gsi, one_stmt, GSI_SAME_STMT);
+
+  e = single_succ_edge (one_stmt->bb);
+  SET_PHI_ARG_DEF (phi, e->dest_idx, one_set);
+
+  /* "ssa1 = 0" stmt to be placed depending on whether
+     we're handling the IOR|AND diamond case or not.  */
+  tree zero_set = make_ssa_name (elems_type);
+  gimple *zero_stmt = gimple_build_assign (zero_set,
+                                     wide_int_to_tree (elems_type, 0));
+  SSA_NAME_DEF_STMT (zero_set) = zero_stmt;
+  
   if (op2_stmt)
     {
-      /* Create a "ssa1 = 0" stmt in the and_stmt block,
-	 after the and_stmt.  Do not move and_stmt yet.  */
-      tree zero_set = make_ssa_name (elems_type);
-      gimple *zero_stmt = gimple_build_assign (zero_set,
-                                     wide_int_to_tree (elems_type, 0));
-      SSA_NAME_DEF_STMT (zero_set) = zero_stmt;
-
       gsi = gsi_for_stmt (op2_stmt);
       gsi_insert_after (&gsi, zero_stmt, GSI_SAME_STMT);
 
-      tree one_set = make_ssa_name (elems_type);
-      gimple *one_stmt = gimple_build_assign (one_set,
-                                        wide_int_to_tree (elems_type, 1));
-      SSA_NAME_DEF_STMT (one_set) = one_stmt;
-
-      gsi = gsi_for_stmt (op1_stmt);
-      gsi_insert_after (&gsi, one_stmt, GSI_SAME_STMT);
-
       e = single_succ_edge (zero_stmt->bb);
       SET_PHI_ARG_DEF (phi, e->dest_idx, zero_set);
-      e = single_succ_edge (one_stmt->bb);
-      SET_PHI_ARG_DEF (phi, e->dest_idx, one_set);
-
-      /*
-      e = single_succ_edge (op1_stmt->bb);
-      SET_PHI_ARG_DEF (phi, e->dest_idx,
-		       wide_int_to_tree (elems_type, 1));
-      e = single_succ_edge (op2_stmt->bb);
-      SET_PHI_ARG_DEF (phi, e->dest_idx,
-		       wide_int_to_tree (elems_type, 0)); */
     }
   else
     {
-      edge true_edge, false_edge;
-      basic_block cond_bb;
-
       e = single_pred_edge (op1_stmt->bb);
-      cond_bb = e->src;
-      extract_true_false_edges_from_block (cond_bb, &true_edge, &false_edge);
+      basic_block cond_bb = e->src;
 
-      e = single_succ_edge (op1_stmt->bb);
-      if (true_edge->dest == op1_stmt->bb)
-	{
-	  SET_PHI_ARG_DEF (phi, e->dest_idx,
-			   wide_int_to_tree (elems_type, 1));
-	
-	  SET_PHI_ARG_DEF (phi, false_edge->dest_idx,
-			   wide_int_to_tree (elems_type, 0));
-	}
+      gsi = gsi_last_nondebug_bb (cond_bb);
+      gsi_insert_before (&gsi, zero_stmt, GSI_SAME_STMT);
+   
+      edge e1, e2;
+      extract_true_false_edges_from_block (cond_bb, &e1, &e2);
+
+      if (e1->dest == phi->bb)
+	SET_PHI_ARG_DEF (phi, e1->dest_idx,
+			 wide_int_to_tree (elems_type, 0));
       else
-	{
-	  SET_PHI_ARG_DEF (phi, e->dest_idx,
-			   wide_int_to_tree (elems_type, 0));
-	
-	  SET_PHI_ARG_DEF (phi, true_edge->dest_idx,
-			   wide_int_to_tree (elems_type, 1));
-	}
+      	SET_PHI_ARG_DEF (phi, e2->dest_idx,
+			 wide_int_to_tree (elems_type, 0));
     }
 
   tree result_imm_tree = wide_int_to_tree (elems_type, result_imm);
@@ -3004,56 +2993,6 @@ block_has_single_assignment (basic_block bb)
      VAR2 = VAR1 OP VAL3;
      ...  */
 
-static bool
-canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNUSED gphi *phi)
-{
-  return false;
-#if 0
-  /* Limit the number of phi nodes to 2.   */
-  if (EDGE_COUNT (phi->bb->preds) != 2)
-    return false;
-
-  /* Check if the middle blocks has a single stmt.  */
-  gimple *op1_stmt = block_has_single_assignment(middle1);
-
-  if (!op1_stmt)
-    return false;
-
-  /* Check if op1_stmt is a binary op in the format
-     SSA_NAME OP INTEGRAL_TYPE_P.  Supported OPs:
-     IOR LSHIFT RSHIFT PLUS MINUS.  */
-
-  if (gimple_assign_rhs_class (op1_stmt) != GIMPLE_BINARY_RHS)
-    return false;
-
-  tree rhs1 = gimple_assign_rhs1 (op1_stmt);
-  tree rhs2 = gimple_assign_rhs2 (op1_stmt);
-  if (TREE_CODE (rhs1) != SSA_NAME
-      || TREE_CODE (rhs2) != INTEGER_CST
-      || !INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
-      || !INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
-    return false;
-
-  switch (gimple_assign_rhs_code (op1_stmt))
-    {
-      case BIT_IOR_EXPR:
-      case BIT_XOR_EXPR:
-      case LSHIFT_EXPR:
-      case RSHIFT_EXPR:
-      // case PLUS_EXPR:
-      // case MINUS_EXPR:
-	break;
-      default:
-        return false;
-    }
-
-  unsigned HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
-
-  return move_conditional_ops (op1_stmt, NULL, phi, imm_val);
-#endif
-}
-
-
 /* This is a more specific case for canonicalize_conditional_op
    where we have a diamond shape that has two opposing OPs
    (IOR and AND) that uses the same immediate.  The idea is the same
@@ -3093,22 +3032,14 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
      ...  */
 
 static bool
-canonicalize_conditional_bitops (basic_block middle1,
-			         basic_block middle2,
-			         gphi *phi)
+canonicalize_conditional_ops (basic_block middle1,
+			      basic_block middle2,
+			      gphi *phi)
 {
-  gimple *ior_stmt = NULL, *and_stmt = NULL;
-  unsigned HOST_WIDE_INT bitop_shift;
-
-  /* Limit the number of phi nodes to 2.   */
+  /* Limit the number of phi nodes to 2.
+     ??? Do we need to check that?  */
   if (EDGE_COUNT (phi->bb->preds) != 2)
     return false;
-
-  /* Check if we have only fallthru edges in join_bb for a diamond.
-     ??? Maybe this check is done elsewhere ...  */
-  for (edge e: phi->bb->preds)
-    if (!(e->flags & EDGE_FALLTHRU))
-      return false;
 
   /* gphi result must have a single nondebug use.  */
   tree gphi_res = gimple_phi_result (phi);
@@ -3129,6 +3060,54 @@ canonicalize_conditional_bitops (basic_block middle1,
   gimple *stmt = block_has_single_assignment(middle1);
   if (!stmt)
     return false;
+
+  if (!middle2)
+    {
+      gimple *op1_stmt = stmt;
+
+      /* Check if op1_stmt is a binary op in the format
+         SSA_NAME OP INTEGRAL_TYPE_P.  Supported OPs:
+         IOR LSHIFT RSHIFT PLUS MINUS.  */
+
+      if (gimple_assign_rhs_class (op1_stmt) != GIMPLE_BINARY_RHS)
+	return false;
+
+      tree rhs1 = gimple_assign_rhs1 (op1_stmt);
+      tree rhs2 = gimple_assign_rhs2 (op1_stmt);
+      if (TREE_CODE (rhs1) != SSA_NAME
+	  || TREE_CODE (rhs2) != INTEGER_CST
+	  || !INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
+	  || !INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
+	return false;
+
+      switch (gimple_assign_rhs_code (op1_stmt))
+	{
+	  case BIT_IOR_EXPR:
+	  case BIT_XOR_EXPR:
+	  case LSHIFT_EXPR:
+	  case RSHIFT_EXPR:
+	  // case PLUS_EXPR:
+	  // case MINUS_EXPR:
+	    break;
+	  default:
+	    return false;
+	}
+
+      unsigned HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
+      return move_conditional_ops (op1_stmt, NULL, phi, imm_val);
+   }
+
+  gimple *ior_stmt = NULL, *and_stmt = NULL;
+  unsigned HOST_WIDE_INT bitop_shift;
+
+  if (!single_pred_p (middle2))
+    return false;
+
+  /* Check if we have only fallthru edges in join_bb for a diamond.
+     ??? Maybe this check is done elsewhere ...  */
+  for (edge e: phi->bb->preds)
+    if (!(e->flags & EDGE_FALLTHRU))
+      return false;
 
   if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
     ior_stmt = stmt;
@@ -4529,13 +4508,8 @@ pass_phiopt::execute (function *)
 	       && spaceship_replacement (bb, bb1, e1, e2, phi, arg0, arg1))
 	cfgchanged = true;
       else if (single_pred_p (bb1)
-	       && !diamond_p
-	       && canonicalize_conditional_op (bb1, phi))
-	cfgchanged = true;
-      else if (single_pred_p (bb1)
-	       && diamond_p
-	       && single_pred_p (bb2)
-	       && canonicalize_conditional_bitops (bb1, bb2, phi))
+	       && canonicalize_conditional_ops (bb1, diamond_p ? bb2 : NULL,
+						phi))
 	cfgchanged = true;
     };
 
