@@ -2703,6 +2703,14 @@ cond_removal_in_builtin_zero_pattern (basic_block cond_bb,
   return true;
 }
 
+static bool move_cond_bitops_val_type (tree type)
+{
+  // maybe also BITINT_TYPE?
+  //return TREE_CODE (type) == INTEGER_TYPE || TREE_CODE (type) == BITINT_TYPE;
+
+  return TREE_CODE (type) == INTEGER_TYPE;
+}
+
 /* Given ior_stmt and and_stmt like:
 
    ior_stmt = _13 = pretmp_37 | 1048576
@@ -2721,8 +2729,8 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
 
   if (TREE_CODE (rhs1) == SSA_NAME
       && TREE_CODE (rhs2) == INTEGER_CST
-      && INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
-      && INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
+      && move_cond_bitops_val_type (TREE_TYPE (rhs1))
+      && move_cond_bitops_val_type (TREE_TYPE (rhs2)))
     {
       ssa_name = rhs1;
       ior_imm = rhs2;
@@ -2735,8 +2743,8 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
 
   if (TREE_CODE (rhs1) == SSA_NAME
       && TREE_CODE (rhs2) == INTEGER_CST
-      && INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
-      && INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
+      && move_cond_bitops_val_type (TREE_TYPE (rhs1))
+      && move_cond_bitops_val_type (TREE_TYPE (rhs2)))
     {
       if (rhs1 != ssa_name)
 	return 0;
@@ -2748,13 +2756,37 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
 
   ior_imm_val = TREE_INT_CST_LOW (ior_imm);
   and_imm_val = TREE_INT_CST_LOW (and_imm);
+
+  if (ior_imm_val < 1 || and_imm_val < 1)
+    return 0;
+
+  if (TYPE_PRECISION (TREE_TYPE (and_imm)) >= TYPE_PRECISION (TREE_TYPE (ior_imm)))
+    {
+      cond_mask = GET_MODE_MASK (TYPE_MODE (TREE_TYPE (and_imm)));
+      if (!((cond_mask & ~ior_imm_val) == and_imm_val))
+        return 0;
+    }
+  else
+    {
+      cond_mask = GET_MODE_MASK (TYPE_MODE (TREE_TYPE (ior_imm)));
+      if (!((cond_mask & ~and_imm_val) == ior_imm_val))
+        return 0;
+    }
+
+  return ior_imm_val;
+
+
+  /*
+  if (popcount_hwi (ior_imm_val) != popcount_hwi (~and_imm_val))
+    return 0;
+
   cond_mask = GET_MODE_MASK (TYPE_MODE (TREE_TYPE (and_imm)));
 
   if (!((cond_mask & ~ior_imm_val) == and_imm_val)) {
     return 0;
-  }
+  } */
 
-  return ior_imm_val;
+  // return ior_imm_val;
 }
 
 /* Helper function for canonicalize_conditional_*.  'op1_stmt' is
@@ -2789,12 +2821,36 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
      FALSE edge.  */
   if (op2_stmt)
     {
+      /* Create a "ssa1 = 0" stmt in the and_stmt block,
+	 after the and_stmt.  Do not move and_stmt yet.  */
+      tree zero_set = make_ssa_name (elems_type);
+      gimple *zero_stmt = gimple_build_assign (zero_set,
+                                     wide_int_to_tree (elems_type, 0));
+      SSA_NAME_DEF_STMT (zero_set) = zero_stmt;
+
+      gsi = gsi_for_stmt (op2_stmt);
+      gsi_insert_after (&gsi, zero_stmt, GSI_SAME_STMT);
+
+      tree one_set = make_ssa_name (elems_type);
+      gimple *one_stmt = gimple_build_assign (one_set,
+                                        wide_int_to_tree (elems_type, 1));
+      SSA_NAME_DEF_STMT (one_set) = one_stmt;
+
+      gsi = gsi_for_stmt (op1_stmt);
+      gsi_insert_after (&gsi, one_stmt, GSI_SAME_STMT);
+
+      e = single_succ_edge (zero_stmt->bb);
+      SET_PHI_ARG_DEF (phi, e->dest_idx, zero_set);
+      e = single_succ_edge (one_stmt->bb);
+      SET_PHI_ARG_DEF (phi, e->dest_idx, one_set);
+
+      /*
       e = single_succ_edge (op1_stmt->bb);
       SET_PHI_ARG_DEF (phi, e->dest_idx,
 		       wide_int_to_tree (elems_type, 1));
       e = single_succ_edge (op2_stmt->bb);
       SET_PHI_ARG_DEF (phi, e->dest_idx,
-		       wide_int_to_tree (elems_type, 0));
+		       wide_int_to_tree (elems_type, 0)); */
     }
   else
     {
@@ -2951,6 +3007,8 @@ block_has_single_assignment (basic_block bb)
 static bool
 canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNUSED gphi *phi)
 {
+  return false;
+#if 0
   /* Limit the number of phi nodes to 2.   */
   if (EDGE_COUNT (phi->bb->preds) != 2)
     return false;
@@ -2992,6 +3050,7 @@ canonicalize_conditional_op (ATTRIBUTE_UNUSED basic_block middle1, ATTRIBUTE_UNU
   unsigned HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
 
   return move_conditional_ops (op1_stmt, NULL, phi, imm_val);
+#endif
 }
 
 
@@ -3054,35 +3113,26 @@ canonicalize_conditional_bitops (basic_block middle1,
   /* Check if the middle blocks has a single stmt (either
      an IOR or an AND) or a single stmt + a goto.  */
   gimple *stmt = block_has_single_assignment(middle1);
-
   if (!stmt)
     return false;
 
   if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
     ior_stmt = stmt;
-  else if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
-    and_stmt = stmt;
   else
+    return false;
+
+  /* Check if ior_stmt is coming from the TRUE edge of cond_bb.  */
+  edge e = single_pred_edge (ior_stmt->bb);
+  if (!(e->flags & EDGE_TRUE_VALUE))
     return false;
 
   stmt = block_has_single_assignment(middle2);
   if (!stmt)
     return false;
 
-  if (gimple_assign_rhs_code (stmt) == BIT_IOR_EXPR)
-    ior_stmt = stmt;
-  else if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
+  if (gimple_assign_rhs_code (stmt) == BIT_AND_EXPR)
     and_stmt = stmt;
   else
-    return false;
-
-  /* We need both ior_stmt and and_stmt.  */
-  if (!ior_stmt || !and_stmt)
-    return false;
-
-  /* Check if ior_stmt is coming from the TRUE edge of cond_bb.  */
-  edge e = single_pred_edge (ior_stmt->bb);
-  if (!(e->flags & EDGE_TRUE_VALUE))
     return false;
 
   /* Calculate the shift immediate from the constants found
