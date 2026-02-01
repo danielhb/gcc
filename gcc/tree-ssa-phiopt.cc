@@ -2761,23 +2761,21 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
     return 0;
 
   ior_imm_val = TREE_INT_CST_LOW (ior_imm);
+  if (popcount_hwi (ior_imm_val) != 1)
+    return 0;
+
   and_imm_val = TREE_INT_CST_LOW (and_imm);
 
   if (ior_imm_val < 1 || and_imm_val < 1)
     return 0;
 
-  if (TYPE_PRECISION (TREE_TYPE (and_imm)) >= TYPE_PRECISION (TREE_TYPE (ior_imm)))
-    {
-      cond_mask = GET_MODE_MASK (TYPE_MODE (TREE_TYPE (and_imm)));
-      if ((cond_mask & ~ior_imm_val) != and_imm_val)
-        return 0;
-    }
-  else
-    {
-      cond_mask = GET_MODE_MASK (TYPE_MODE (TREE_TYPE (ior_imm)));
-      if ((cond_mask & ~and_imm_val) != ior_imm_val)
-        return 0;
-    }
+  if (TYPE_PRECISION (TREE_TYPE (and_imm)) != TYPE_PRECISION (TREE_TYPE (ior_imm)))
+    return 0;
+
+  cond_mask = GET_MODE_MASK (TYPE_MODE (TREE_TYPE (and_imm)));
+
+  if ((cond_mask & ~ior_imm_val) != and_imm_val)
+    return 0;
 
   return ior_imm_val;
 
@@ -3062,6 +3060,10 @@ canonicalize_conditional_ops (basic_block middle1,
     return false;
 
   if (!middle2)
+    return false;
+
+#if 0
+  if (!middle2)
     {
       gimple *op1_stmt = stmt;
 
@@ -3096,6 +3098,7 @@ canonicalize_conditional_ops (basic_block middle1,
       unsigned HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
       return move_conditional_ops (op1_stmt, NULL, phi, imm_val);
    }
+#endif
 
   gimple *ior_stmt = NULL, *and_stmt = NULL;
   unsigned HOST_WIDE_INT bitop_shift;
