@@ -3127,8 +3127,10 @@ canonicalize_conditional_ops (basic_block middle1,
   tree rhs2 = gimple_assign_rhs2 (op1_stmt);
   if (TREE_CODE (rhs1) != SSA_NAME
       || TREE_CODE (rhs2) != INTEGER_CST
-      || !INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
-      || !INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
+      || TREE_CODE (TREE_TYPE (rhs1)) != INTEGER_TYPE
+      || TREE_CODE (TREE_TYPE (rhs2)) != INTEGER_TYPE
+      || !TYPE_UNSIGNED (TREE_TYPE (rhs1))
+      || !TYPE_UNSIGNED (TREE_TYPE (rhs2)))
     return false;
 
   switch (gimple_assign_rhs_code (op1_stmt))
