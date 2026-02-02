@@ -2960,37 +2960,6 @@ block_has_single_assignment (basic_block bb)
   return stmt;
 }
 
-/* Our goal with canonicalize_conditional_op is to turn conditional
-   binary ops and canonicalize them by (1) moving the op to merge BB,
-   making it unconditional and (2) use a 0/1 switch with the OP.  This
-   allows for a wider range of possible optimizations.  A usual
-   optimization with this canonicalization is the use of 'cond' as the
-   0/1 switch, eliminating the branch.
-
-   The pattern supported is:
-
-   VAR1 = ...
-   if (cond) goto THEN_BB; else goto JOIN_BB
-   THEN_BB:
-     VAR2 = VAR1 OP B;
-     goto JOIN_BB;
-   JOIN_BB ():
-     # VAR3 = PHI (VAR1, VAR2)
-     ...
-
-   We want to turn it to:
-
-   VAR1 = ...
-   if (cond) goto THEN_BB; else goto JOIN_BB
-   THEN_BB:
-     VAL = 1;
-     goto JOIN_BB;
-   JOIN_BB ():
-     # VAL2 = PHI (0, 1)
-     VAL3 = B * VAL2;
-     VAR2 = VAR1 OP VAL3;
-     ...  */
-
 /* This is a more specific case for canonicalize_conditional_op
    where we have a diamond shape that has two opposing OPs
    (IOR and AND) that uses the same immediate.  The idea is the same
@@ -3030,75 +2999,14 @@ block_has_single_assignment (basic_block bb)
      ...  */
 
 static bool
-canonicalize_conditional_ops (basic_block middle1,
-			      basic_block middle2,
-			      gphi *phi)
+canonicalize_cond_bitops (basic_block middle1, basic_block middle2,
+			  gphi *phi)
 {
-  /* Limit the number of phi nodes to 2.
-     ??? Do we need to check that?  */
-  if (EDGE_COUNT (phi->bb->preds) != 2)
-    return false;
-
-  /* gphi result must have a single nondebug use.  */
-  tree gphi_res = gimple_phi_result (phi);
-  int uses = 0;
-  for (gimple *use_stmt : gather_imm_use_stmts (gphi_res))
-    {
-      if (uses == 1)
-        return false;
-      
-      if (!is_gimple_assign (use_stmt) && use_stmt->code != GIMPLE_RETURN)
-        return false;
-
-      uses++;
-    }
-
-  /* Check if the middle blocks has a single stmt (either
+  /* Check if the middle1 has a single stmt (either
      an IOR or an AND) or a single stmt + a goto.  */
   gimple *stmt = block_has_single_assignment(middle1);
   if (!stmt)
     return false;
-
-  if (!middle2)
-    return false;
-
-#if 0
-  if (!middle2)
-    {
-      gimple *op1_stmt = stmt;
-
-      /* Check if op1_stmt is a binary op in the format
-         SSA_NAME OP INTEGRAL_TYPE_P.  Supported OPs:
-         IOR LSHIFT RSHIFT PLUS MINUS.  */
-
-      if (gimple_assign_rhs_class (op1_stmt) != GIMPLE_BINARY_RHS)
-	return false;
-
-      tree rhs1 = gimple_assign_rhs1 (op1_stmt);
-      tree rhs2 = gimple_assign_rhs2 (op1_stmt);
-      if (TREE_CODE (rhs1) != SSA_NAME
-	  || TREE_CODE (rhs2) != INTEGER_CST
-	  || !INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
-	  || !INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
-	return false;
-
-      switch (gimple_assign_rhs_code (op1_stmt))
-	{
-	  case BIT_IOR_EXPR:
-	  case BIT_XOR_EXPR:
-	  case LSHIFT_EXPR:
-	  case RSHIFT_EXPR:
-	  // case PLUS_EXPR:
-	  // case MINUS_EXPR:
-	    break;
-	  default:
-	    return false;
-	}
-
-      unsigned HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
-      return move_conditional_ops (op1_stmt, NULL, phi, imm_val);
-   }
-#endif
 
   gimple *ior_stmt = NULL, *and_stmt = NULL;
   unsigned HOST_WIDE_INT bitop_shift;
@@ -3138,6 +3046,107 @@ canonicalize_conditional_ops (basic_block middle1,
     return false;
 
   return move_conditional_ops (ior_stmt, and_stmt, phi, bitop_shift);
+}
+
+/* Our goal with canonicalize_conditional_op is to turn conditional
+   binary ops and canonicalize them by (1) moving the op to merge BB,
+   making it unconditional and (2) use a 0/1 switch with the OP.  This
+   allows for a wider range of possible optimizations.  A usual
+   optimization with this canonicalization is the use of 'cond' as the
+   0/1 switch, eliminating the branch.
+
+   The pattern supported is:
+
+   VAR1 = ...
+   if (cond) goto THEN_BB; else goto JOIN_BB
+   THEN_BB:
+     VAR2 = VAR1 OP B;
+     goto JOIN_BB;
+   JOIN_BB ():
+     # VAR3 = PHI (VAR1, VAR2)
+     ...
+
+   We want to turn it to:
+
+   VAR1 = ...
+   if (cond) goto THEN_BB; else goto JOIN_BB
+   THEN_BB:
+     VAL = 1;
+     goto JOIN_BB;
+   JOIN_BB ():
+     # VAL2 = PHI (0, 1)
+     VAL3 = B * VAL2;
+     VAR2 = VAR1 OP VAL3;
+     ...  */
+
+static bool
+canonicalize_conditional_ops (basic_block middle1,
+			      basic_block middle2,
+			      gphi *phi)
+{
+  /* Limit the number of phi nodes to 2.
+     ??? Do we need to check that?  */
+  if (EDGE_COUNT (phi->bb->preds) != 2)
+    return false;
+
+  /* gphi result must have a single nondebug use.
+     ??? Maybe just veto debug uses and allow everything else.  */
+  tree gphi_res = gimple_phi_result (phi);
+  int uses = 0;
+  for (gimple *use_stmt : gather_imm_use_stmts (gphi_res))
+    {
+      if (uses == 1)
+        return false;
+      
+      if (!is_gimple_assign (use_stmt) && use_stmt->code != GIMPLE_RETURN)
+        return false;
+
+      uses++;
+    }
+
+  if (middle2)
+    return canonicalize_cond_bitops (middle1, middle2, phi);
+
+  /* Check if the middle1 has a single stmt (either
+     an IOR or an AND) or a single stmt + a goto.  */
+  gimple *op1_stmt = block_has_single_assignment(middle1);
+  if (!op1_stmt)
+    return false;
+
+  /* Check if op1_stmt is coming from the TRUE edge of cond_bb.  */
+  edge e = single_pred_edge (op1_stmt->bb);
+  if (!(e->flags & EDGE_TRUE_VALUE))
+    return false;
+
+  /* Check if op1_stmt is a binary op in the format
+     SSA_NAME OP INTEGRAL_TYPE_P.  */
+  if (gimple_assign_rhs_class (op1_stmt) != GIMPLE_BINARY_RHS)
+    return false;
+
+  tree rhs1 = gimple_assign_rhs1 (op1_stmt);
+  tree rhs2 = gimple_assign_rhs2 (op1_stmt);
+  if (TREE_CODE (rhs1) != SSA_NAME
+      || TREE_CODE (rhs2) != INTEGER_CST
+      || !INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
+      || !INTEGRAL_TYPE_P (TREE_TYPE (rhs2)))
+    return false;
+
+  switch (gimple_assign_rhs_code (op1_stmt))
+    {
+      case BIT_IOR_EXPR:
+      case BIT_XOR_EXPR:
+      case LSHIFT_EXPR:
+      case RSHIFT_EXPR:
+	break;
+      default:
+	return false;
+    }
+
+  unsigned HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
+  if (popcount_hwi (imm_val) != 1)
+    return false;
+
+  return move_conditional_ops (op1_stmt, NULL, phi, wi::ctz (imm_val));
 }
 
 /* Auxiliary functions to determine the set of memory accesses which
