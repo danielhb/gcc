@@ -2777,7 +2777,7 @@ bitops_uses_same_shift_imm (ATTRIBUTE_UNUSED gimple *ior_stmt, ATTRIBUTE_UNUSED 
   if ((cond_mask & ~ior_imm_val) != and_imm_val)
     return 0;
 
-  return wi::ctz (ior_imm_val);
+  return ior_imm_val;
 
   /*
   if (popcount_hwi (ior_imm_val) != popcount_hwi (~and_imm_val))
@@ -2823,7 +2823,7 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
      Update phi accordingly.  */
   tree one_set = make_ssa_name (elems_type);
   gimple *one_stmt = gimple_build_assign (one_set,
-					  wide_int_to_tree (elems_type, 1));
+	wide_int_to_tree (elems_type, GET_MODE_MASK (TYPE_MODE (elems_type))));
   SSA_NAME_DEF_STMT (one_set) = one_stmt;
 
   gsi = gsi_for_stmt (op1_stmt);
@@ -2869,7 +2869,7 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
   tree result_imm_tree = wide_int_to_tree (elems_type, result_imm);
 
   tree lshift = make_ssa_name (elems_type);
-  gimple *result_stmt = gimple_build_assign (lshift, LSHIFT_EXPR, gphi_res,
+  gimple *result_stmt = gimple_build_assign (lshift, BIT_AND_EXPR, gphi_res,
 					     result_imm_tree);
        
   SSA_NAME_DEF_STMT (lshift) = result_stmt;
