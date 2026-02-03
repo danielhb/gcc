@@ -2871,38 +2871,52 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
   tree lshift = make_ssa_name (elems_type);
   gimple *result_stmt = gimple_build_assign (lshift, LSHIFT_EXPR, gphi_res,
 					     result_imm_tree);
-       
   SSA_NAME_DEF_STMT (lshift) = result_stmt;
 
   /* Move result_stmt, op2_stmt if applicable and op1_stmt.
      op2_stmt must come before op1_stmt.  */
   gsi = gsi_start_nondebug_after_labels_bb (phi->bb) ;
   gsi_insert_before (&gsi, result_stmt, GSI_SAME_STMT);
-  update_stmt (result_stmt);
 
   gsi = gsi_for_stmt (result_stmt);
-  gimple_stmt_iterator gsi_from;
 
+  tree new_op2_lhs;
   if (op2_stmt)
     {
-      gsi_from = gsi_for_stmt (op2_stmt);
-      gsi_move_after (&gsi_from, &gsi);
-      update_stmt (op2_stmt);
+      /* Re-create op2_stmt instead of moving it to avoid
+         dealing with debug stms.  */
+      gimple *new_op2_stmt;
+      tree new_rhs1 = gimple_assign_rhs1 (op2_stmt);
+      tree new_rhs2 = gimple_assign_rhs2 (op2_stmt);
+      tree_code op2_code = gimple_assign_rhs_code (op2_stmt);
 
-      gsi = gsi_for_stmt (op2_stmt);
+      new_op2_lhs = make_ssa_name (elems_type);
+      new_op2_stmt = gimple_build_assign (new_op2_lhs, op2_code,
+					  new_rhs1, new_rhs2);
+      SSA_NAME_DEF_STMT (new_op2_lhs) = new_op2_stmt;
+
+      gsi_insert_after (&gsi, new_op2_stmt, GSI_NEW_STMT);
     }
 
-  gsi_from = gsi_for_stmt (op1_stmt);
-  gsi_move_after (&gsi_from, &gsi);
-
-  /* op1_stmt rhs2 must be changed to LHS (result_stmt).  If
-     we have op2_stmt then op1_stmt rhs1 must also be changed
-     to LHS (op2_stmt)*/
-  gimple_assign_set_rhs2 (op1_stmt, gimple_assign_lhs (result_stmt));
+  /* Re-create op1_stmt instead of moving it to avoid
+     dealing with debug stms.  Its rhs2 must be changed to
+     LHS (result_stmt).  If we have a (new_)op2_stmt then
+     the new op1_stmt rhs1 must also be changed to LHS
+     (new_op2_stmt).  */
+  tree new_op1_lhs = make_ssa_name (elems_type);
+  tree new_rhs1 = gimple_assign_rhs1 (op1_stmt);
   if (op2_stmt)
-    gimple_assign_set_rhs1 (op1_stmt, gimple_assign_lhs (op2_stmt));
-  update_stmt (op1_stmt);
+    new_rhs1 = new_op2_lhs;
+  tree new_rhs2 = gimple_assign_lhs (result_stmt);
+  tree_code op1_code = gimple_assign_rhs_code (op1_stmt);
 
+  gimple *new_op1_stmt = gimple_build_assign (new_op1_lhs, op1_code,
+					      new_rhs1, new_rhs2);
+  SSA_NAME_DEF_STMT (new_op1_lhs) = new_op1_stmt;
+
+  gsi_insert_after (&gsi, new_op1_stmt, GSI_SAME_STMT);
+
+#if 0
   /* We'll have to replace all gphi_res instances.  Ideally
      we could just use op1_stmt LHS, but create a new var
      with gphi_res type and use it instead.  */
@@ -2914,9 +2928,11 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
 
   gsi = gsi_for_stmt (op1_stmt);
   gsi_insert_after (&gsi, cast_stmt, GSI_SAME_STMT);
+#endif
 
   /* Replace all uses of the old phi result with gphi_replace,
      skipping any debug stmts and result_stmt itself.  */
+  tree gphi_replace = gimple_assign_lhs (new_op1_stmt);
   gimple *stmt;
   use_operand_p use_p;
   imm_use_iterator iterator;
@@ -2930,6 +2946,17 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
 	SET_USE (use_p, gphi_replace);
 
       update_stmt (stmt);
+    }
+
+  gsi = gsi_for_stmt (op1_stmt);
+  gsi_remove (&gsi, true);
+  release_defs (op1_stmt);
+
+  if (op2_stmt)
+    {
+      gsi = gsi_for_stmt (op2_stmt);
+      gsi_remove (&gsi, true);
+      release_defs (op2_stmt);
     }
 
   return true;
@@ -3109,7 +3136,7 @@ canonicalize_conditional_ops (basic_block middle1,
 
   /* Check if the middle1 has a single stmt (either
      an IOR or an AND) or a single stmt + a goto.  */
-  gimple *op1_stmt = block_has_single_assignment(middle1);
+  gimple *op1_stmt = block_has_single_assignment (middle1);
   if (!op1_stmt)
     return false;
 
@@ -3127,10 +3154,7 @@ canonicalize_conditional_ops (basic_block middle1,
   tree rhs2 = gimple_assign_rhs2 (op1_stmt);
   if (TREE_CODE (rhs1) != SSA_NAME
       || TREE_CODE (rhs2) != INTEGER_CST
-      || TREE_CODE (TREE_TYPE (rhs1)) != INTEGER_TYPE
-      || TREE_CODE (TREE_TYPE (rhs2)) != INTEGER_TYPE
-      || !TYPE_UNSIGNED (TREE_TYPE (rhs1))
-      || !TYPE_UNSIGNED (TREE_TYPE (rhs2)))
+      || TREE_CODE (TREE_TYPE (rhs1)) != INTEGER_TYPE)
     return false;
 
   switch (gimple_assign_rhs_code (op1_stmt))
