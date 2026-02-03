@@ -2821,39 +2821,19 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
 
   /* "ssa = 1" stmt to be placed in the op1_stmt bb.
      Update phi accordingly.  */
-  tree one_set = make_ssa_name (elems_type);
-  gimple *one_stmt = gimple_build_assign (one_set,
-					  wide_int_to_tree (elems_type, 1));
-  SSA_NAME_DEF_STMT (one_set) = one_stmt;
 
-  gsi = gsi_for_stmt (op1_stmt);
-  gsi_insert_after (&gsi, one_stmt, GSI_SAME_STMT);
+  e = single_succ_edge (op1_stmt->bb);
+  SET_PHI_ARG_DEF (phi, e->dest_idx, wide_int_to_tree (elems_type, 1));
 
-  e = single_succ_edge (one_stmt->bb);
-  SET_PHI_ARG_DEF (phi, e->dest_idx, one_set);
-
-  /* "ssa1 = 0" stmt to be placed depending on whether
-     we're handling the IOR|AND diamond case or not.  */
-  tree zero_set = make_ssa_name (elems_type);
-  gimple *zero_stmt = gimple_build_assign (zero_set,
-                                     wide_int_to_tree (elems_type, 0));
-  SSA_NAME_DEF_STMT (zero_set) = zero_stmt;
-  
   if (op2_stmt)
     {
-      gsi = gsi_for_stmt (op2_stmt);
-      gsi_insert_after (&gsi, zero_stmt, GSI_SAME_STMT);
-
-      e = single_succ_edge (zero_stmt->bb);
-      SET_PHI_ARG_DEF (phi, e->dest_idx, zero_set);
+      e = single_succ_edge (op2_stmt->bb);
+      SET_PHI_ARG_DEF (phi, e->dest_idx, wide_int_to_tree (elems_type, 0));
     }
   else
     {
       e = single_pred_edge (op1_stmt->bb);
       basic_block cond_bb = e->src;
-
-      gsi = gsi_last_nondebug_bb (cond_bb);
-      gsi_insert_before (&gsi, zero_stmt, GSI_SAME_STMT);
    
       edge e1, e2;
       extract_true_false_edges_from_block (cond_bb, &e1, &e2);
