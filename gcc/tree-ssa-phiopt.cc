@@ -3101,21 +3101,6 @@ canonicalize_conditional_ops (basic_block middle1,
   if (EDGE_COUNT (phi->bb->preds) != 2)
     return false;
 
-  /* gphi result must have a single nondebug use.
-     ??? Maybe just veto debug uses and allow everything else.  */
-  tree gphi_res = gimple_phi_result (phi);
-  int uses = 0;
-  for (gimple *use_stmt : gather_imm_use_stmts (gphi_res))
-    {
-      if (uses == 1)
-        return false;
-      
-      if (!is_gimple_assign (use_stmt) && use_stmt->code != GIMPLE_RETURN)
-        return false;
-
-      uses++;
-    }
-
   if (middle2)
     return canonicalize_cond_bitops (middle1, middle2, phi);
 
