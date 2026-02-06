@@ -2814,6 +2814,9 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
 		      gphi *phi,
 		      unsigned HOST_WIDE_INT result_imm)
 {
+  if (!dbg_cnt (phiopt_cond_ops))
+    return false;
+
   tree gphi_res = gimple_phi_result (phi);
   tree elems_type = TREE_TYPE (gphi_res);
   gimple_stmt_iterator gsi;
@@ -2938,6 +2941,8 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
       gsi_remove (&gsi, true);
       release_defs (op2_stmt);
     }
+
+  reset_flow_sensitive_info_in_bb (phi->bb);
 
   return true;
 }
@@ -3135,6 +3140,10 @@ canonicalize_conditional_ops (basic_block middle1,
   if (TREE_CODE (rhs1) != SSA_NAME
       || TREE_CODE (rhs2) != INTEGER_CST
       || TREE_CODE (TREE_TYPE (rhs1)) != INTEGER_TYPE)
+    return false;
+
+  /* Filter out negative immediate vals.  */
+  if (!TYPE_UNSIGNED (TREE_TYPE (rhs2)) && tree_int_cst_sgn (rhs2) < 0)
     return false;
 
   switch (gimple_assign_rhs_code (op1_stmt))
