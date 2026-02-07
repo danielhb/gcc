@@ -2997,7 +2997,13 @@ block_has_single_assignment (basic_block bb)
   if (!last_stmt)
     return NULL;
 
-  if (last_stmt != stmt && last_stmt->code != GIMPLE_GOTO)
+  if (gimple_code (last_stmt) == GIMPLE_GOTO)
+    {
+      gsi_prev (&gsi);
+      last_stmt = gsi_stmt (gsi);
+    }
+
+  if (last_stmt != stmt)
     return NULL;
 
   return stmt;
