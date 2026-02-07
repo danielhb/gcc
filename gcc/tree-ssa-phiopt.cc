@@ -2849,36 +2849,47 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
 			 wide_int_to_tree (elems_type, 0));
     }
 
-  tree result_imm_tree = wide_int_to_tree (elems_type, result_imm);
+  gimple *result_stmt = NULL;
 
-  tree lshift = make_ssa_name (elems_type);
-  gimple *result_stmt = gimple_build_assign (lshift, LSHIFT_EXPR, gphi_res,
-					     result_imm_tree);
-  SSA_NAME_DEF_STMT (lshift) = result_stmt;
+  /* Avoid cases where we're doing a PHI << 0 to retrieve
+     the immediate.  In those cases we should just use PHI
+     directly.  */
+  if (result_imm != 0)
+    {
+      tree result_imm_tree = wide_int_to_tree (elems_type, result_imm);
+      tree lshift = make_ssa_name (elems_type);
+      result_stmt = gimple_build_assign (lshift, LSHIFT_EXPR, gphi_res,
+					 result_imm_tree);
+      SSA_NAME_DEF_STMT (lshift) = result_stmt;
 
-  /* Move result_stmt, op2_stmt if applicable and op1_stmt.
-     op2_stmt must come before op1_stmt.  */
-  gsi = gsi_start_nondebug_after_labels_bb (phi->bb) ;
-  gsi_insert_before (&gsi, result_stmt, GSI_SAME_STMT);
+      gsi = gsi_start_nondebug_after_labels_bb (phi->bb) ;
+      gsi_insert_before (&gsi, result_stmt, GSI_SAME_STMT);
+    }
 
-  gsi = gsi_for_stmt (result_stmt);
-
-  tree new_op2_lhs;
+  gimple *new_op2_stmt = NULL;
   if (op2_stmt)
     {
       /* Re-create op2_stmt instead of moving it to avoid
          dealing with debug stms.  */
-      gimple *new_op2_stmt;
       tree new_rhs1 = gimple_assign_rhs1 (op2_stmt);
       tree new_rhs2 = gimple_assign_rhs2 (op2_stmt);
       tree_code op2_code = gimple_assign_rhs_code (op2_stmt);
 
-      new_op2_lhs = make_ssa_name (elems_type);
+      tree new_op2_lhs = make_ssa_name (elems_type);
       new_op2_stmt = gimple_build_assign (new_op2_lhs, op2_code,
 					  new_rhs1, new_rhs2);
       SSA_NAME_DEF_STMT (new_op2_lhs) = new_op2_stmt;
 
-      gsi_insert_after (&gsi, new_op2_stmt, GSI_NEW_STMT);
+      if (result_stmt)
+        {
+	  gsi = gsi_for_stmt (result_stmt);
+	  gsi_insert_after (&gsi, new_op2_stmt, GSI_NEW_STMT);
+	}
+      else
+	{
+	  gsi = gsi_start_nondebug_after_labels_bb (phi->bb) ;
+	  gsi_insert_before (&gsi, new_op2_stmt, GSI_SAME_STMT);
+	}
     }
 
   /* Re-create op1_stmt instead of moving it to avoid
@@ -2887,17 +2898,36 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
      the new op1_stmt rhs1 must also be changed to LHS
      (new_op2_stmt).  */
   tree new_op1_lhs = make_ssa_name (elems_type);
-  tree new_rhs1 = gimple_assign_rhs1 (op1_stmt);
-  if (op2_stmt)
-    new_rhs1 = new_op2_lhs;
-  tree new_rhs2 = gimple_assign_lhs (result_stmt);
   tree_code op1_code = gimple_assign_rhs_code (op1_stmt);
+
+  tree new_rhs1 = gimple_assign_rhs1 (op1_stmt);
+  if (new_op2_stmt)
+    new_rhs1 = gimple_assign_lhs (new_op2_stmt);
+  
+  tree new_rhs2 = gphi_res;
+  if (result_stmt)
+    new_rhs2 = gimple_assign_lhs (result_stmt);
 
   gimple *new_op1_stmt = gimple_build_assign (new_op1_lhs, op1_code,
 					      new_rhs1, new_rhs2);
   SSA_NAME_DEF_STMT (new_op1_lhs) = new_op1_stmt;
 
-  gsi_insert_after (&gsi, new_op1_stmt, GSI_SAME_STMT);
+  if (new_op2_stmt)
+    {
+      gsi = gsi_for_stmt (new_op2_stmt);
+      gsi_insert_after (&gsi, new_op1_stmt, GSI_SAME_STMT);
+    }
+  else if (result_stmt)
+    {
+      gsi = gsi_for_stmt (result_stmt);
+      gsi_insert_after (&gsi, new_op1_stmt, GSI_SAME_STMT);
+    }
+  else
+    {
+      gsi = gsi_start_nondebug_after_labels_bb (phi->bb) ;
+      gsi_insert_before (&gsi, new_op1_stmt, GSI_SAME_STMT);
+    }
+
 
 #if 0
   /* We'll have to replace all gphi_res instances.  Ideally
@@ -2922,7 +2952,8 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
   FOR_EACH_IMM_USE_STMT (stmt, iterator, gphi_res)
     {
       if (is_gimple_debug (stmt)
-	  || stmt == result_stmt)
+	  || stmt == result_stmt
+	  || stmt == new_op1_stmt)
 	continue;
 
       FOR_EACH_IMM_USE_ON_STMT (use_p, iterator)
@@ -2942,7 +2973,7 @@ move_conditional_ops (gimple *op1_stmt, gimple *op2_stmt,
       release_defs (op2_stmt);
     }
 
-  reset_flow_sensitive_info_in_bb (phi->bb);
+  reset_flow_sensitive_info (gphi_res);
 
   return true;
 }
