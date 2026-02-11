@@ -2735,6 +2735,44 @@ block_has_single_assignment (basic_block bb)
 }
 
 static bool
+stmt_is_eligible_canonicalize (gimple *stmt)
+{
+  /* Check if stmt is a binary op in the format
+     SSA_NAME OP INTEGER_CST.  */
+  if (gimple_assign_rhs_class (stmt) != GIMPLE_BINARY_RHS)
+    return false;
+
+  tree rhs1 = gimple_assign_rhs1 (stmt);
+  tree rhs2 = gimple_assign_rhs2 (stmt);
+  if (TREE_CODE (rhs1) != SSA_NAME
+      || !INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
+      || TREE_CODE (rhs2) != INTEGER_CST)
+    return false;
+
+  switch (gimple_assign_rhs_code (stmt))
+    {
+      case BIT_IOR_EXPR:
+      case BIT_XOR_EXPR:
+      case LSHIFT_EXPR:
+      case RSHIFT_EXPR:
+      case PLUS_EXPR:
+	break;
+      default:
+	return false;
+    }
+
+  /* Only work with unsigned/positive immediates.  */
+  if (!TYPE_UNSIGNED (TREE_TYPE (rhs2)) && tree_int_cst_sgn (rhs2) < 0)
+    return false;
+
+  /* Only pow2 immediates are supported for now.  */
+  if (!integer_pow2p (rhs2))
+    return false;
+
+  return true;
+}
+
+static bool
 move_conditional_ops (edge e1, edge e2, gphi *phi,
 		      gimple *op1_stmt,
 		      unsigned HOST_WIDE_INT imm_shift)
@@ -2834,15 +2872,13 @@ canonicalize_conditional_ops (basic_block middle1,
   if (EDGE_COUNT (phi->bb->preds) != 2)
     return false;
 
-  /* Check if the middle1 has a single stmt (either
-     an IOR or an AND) or a single stmt + a goto.  */
+  /* Check if the middle1 has a single stmt or a
+     single stmt + a goto.  */
   gimple *op1_stmt = block_has_single_assignment (middle1);
   if (!op1_stmt)
     return false;
 
-  /* Check if op1_stmt is a binary op in the format
-     SSA_NAME OP INTEGRAL_TYPE_P.  */
-  if (gimple_assign_rhs_class (op1_stmt) != GIMPLE_BINARY_RHS)
+  if (!stmt_is_eligible_canonicalize (op1_stmt))
     return false;
 
   /* PHI arg0 must be the LHS of op1_stmt, and arg1 the RHS1.  */
@@ -2850,32 +2886,7 @@ canonicalize_conditional_ops (basic_block middle1,
       || arg1 != gimple_assign_rhs1 (op1_stmt))
     return false;
 
-  tree rhs1 = gimple_assign_rhs1 (op1_stmt);
   tree rhs2 = gimple_assign_rhs2 (op1_stmt);
-  if (TREE_CODE (rhs1) != SSA_NAME
-      || !INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
-      || TREE_CODE (rhs2) != INTEGER_CST)
-    return false;
-
-  switch (gimple_assign_rhs_code (op1_stmt))
-    {
-      case BIT_IOR_EXPR:
-      case BIT_XOR_EXPR:
-      case LSHIFT_EXPR:
-      case RSHIFT_EXPR:
-	break;
-      default:
-	return false;
-    }
-
-  /* Only work with unsigned/positive immediates.  */
-  if (!TYPE_UNSIGNED (TREE_TYPE (rhs2)) && tree_int_cst_sgn (rhs2) < 0)
-    return false;
-
-  /* Only pow2 immediates are supported for now.  */
-  if (!integer_pow2p (rhs2))
-    return false;
-
   return move_conditional_ops (e1, e2, phi, op1_stmt,
 			       wi::ctz (TREE_INT_CST_LOW (rhs2)));
 }
