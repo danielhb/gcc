@@ -2735,7 +2735,8 @@ block_has_single_assignment (basic_block bb)
 }
 
 static bool
-stmt_is_eligible_canonicalize (gimple *stmt)
+stmt_is_eligible_canonicalize (gimple *stmt,
+			       bool allow_bitand = false)
 {
   /* Check if stmt is a binary op in the format
      SSA_NAME OP INTEGER_CST.  */
@@ -2749,12 +2750,17 @@ stmt_is_eligible_canonicalize (gimple *stmt)
       || TREE_CODE (rhs2) != INTEGER_CST)
     return false;
 
-  switch (gimple_assign_rhs_code (stmt))
+  tree_code rhs_code = gimple_assign_rhs_code (stmt);
+  switch (rhs_code)
     {
       case BIT_IOR_EXPR:
       case BIT_XOR_EXPR:
       case LSHIFT_EXPR:
       case RSHIFT_EXPR:
+	break;
+      case BIT_AND_EXPR:
+	if (!allow_bitand)
+	  return false;
 	break;
       default:
 	return false;
@@ -2764,16 +2770,42 @@ stmt_is_eligible_canonicalize (gimple *stmt)
   if (!TYPE_UNSIGNED (TREE_TYPE (rhs2)) && tree_int_cst_sgn (rhs2) < 0)
     return false;
 
-  /* Only pow2 immediates are supported for now.  */
-  if (!integer_pow2p (rhs2))
+  /* Only pow2 immediates are supported for now.
+     Make an exception for bit_and.  */
+  if (rhs_code != BIT_AND_EXPR && !integer_pow2p (rhs2))
     return false;
 
   return true;
 }
 
+static int
+bitops_uses_same_shift_imm (gimple *ior_stmt, gimple *and_stmt)
+{
+  unsigned HOST_WIDE_INT ior_imm_val, and_imm_val, cond_mask;
+  tree ior_imm = gimple_assign_rhs2 (ior_stmt);
+  tree and_imm = gimple_assign_rhs2 (and_stmt);
+
+  if (!integer_pow2p (ior_imm))
+    return -1;
+
+  int ior_imm_precision = TYPE_PRECISION (TREE_TYPE (ior_imm));
+  int and_imm_precision = TYPE_PRECISION (TREE_TYPE (and_imm));
+  if (ior_imm_precision != and_imm_precision)
+    return -1;
+
+  ior_imm_val = TREE_INT_CST_LOW (ior_imm);
+  and_imm_val = TREE_INT_CST_LOW (and_imm);
+  cond_mask = GET_MODE_MASK (TYPE_MODE (TREE_TYPE (and_imm)));
+
+  if ((cond_mask & ~ior_imm_val) != and_imm_val)
+    return -1;
+
+  return wi::ctz (ior_imm_val);
+}
+
 static bool
 move_conditional_ops (edge e1, edge e2, gphi *phi,
-		      gimple *op1_stmt,
+		      gimple *op1_stmt, gimple *op2_stmt,
 		      unsigned HOST_WIDE_INT imm_shift)
 {
   if (!dbg_cnt (phiopt_cond_ops))
@@ -2811,12 +2843,41 @@ move_conditional_ops (edge e1, edge e2, gphi *phi,
   gsi = gsi_start_nondebug_after_labels_bb (phi->bb);
   gsi_insert_before (&gsi, immediate_stmt, GSI_SAME_STMT);
 
-  /* op1_stmt handling:
-    - rhs2 must be changed to LHS (immediate_stmt)
-    - must be placed after immediate_stmt.  */
-  gsi_from = gsi_for_stmt (op1_stmt);
   gsi = gsi_for_stmt (immediate_stmt);
+  gimple *op2_cast_stmt = NULL;
+
+  if (op2_stmt)
+    {
+      gsi_from = gsi_for_stmt (op2_stmt);
+      gsi_move_after (&gsi_from, &gsi);
+      update_stmt (op2_stmt);
+
+      gsi = gsi_for_stmt (op2_stmt);
+
+      /* op2_stmt LHS will be used as RHS1 of op1_stmt later.
+	 Do a cast stmt to be safe.  */
+      tree op1_rhs1_type = TREE_TYPE (gimple_assign_rhs1 (op1_stmt));
+      tree op2_cast_lhs = make_ssa_name (op1_rhs1_type, NULL);
+      op2_cast_stmt = gimple_build_assign (op2_cast_lhs, NOP_EXPR,
+					   gimple_get_lhs (op2_stmt));
+      SSA_NAME_DEF_STMT (op2_cast_lhs) = op2_cast_stmt;
+
+      /* op1_stmt needs to be inserted after this new cast stmt,
+	 thus use GSI_LAST_NEW_STMT.  */
+      gsi_insert_after (&gsi, op2_cast_stmt, GSI_LAST_NEW_STMT);
+    }
+
+  /* op1_stmt handling:
+    - rhs2 must be changed to LHS (immediate_stmt);
+    - If op2_stmt is present, rhs1 must be changed to
+      LHS of op2_stmt;
+    - Must be placed after immediate_stmt or op2_stmt if
+      present. 'gsi' will point to the right place.  */
+  gsi_from = gsi_for_stmt (op1_stmt);
   gsi_move_after (&gsi_from, &gsi);
+
+  if (op2_cast_stmt)
+    gimple_assign_set_rhs1 (op1_stmt, gimple_assign_lhs (op2_cast_stmt));
 
   tree new_rhs2 = gimple_assign_lhs (immediate_stmt);
   gimple_assign_set_rhs2 (op1_stmt, new_rhs2);
@@ -2862,7 +2923,79 @@ move_conditional_ops (edge e1, edge e2, gphi *phi,
 }
 
 static bool
-canonicalize_conditional_ops (basic_block middle1,
+canonicalize_multiple_bitops (basic_block middle1, basic_block middle2,
+			      gphi *phi)
+{
+  gimple *ior_stmt = NULL, *and_stmt = NULL;
+  gimple *stmt;
+
+  if (!single_pred_p (middle2))
+    return false;
+
+  stmt = block_has_single_assignment (middle1);
+  if (!stmt || !stmt_is_eligible_canonicalize (stmt, true))
+    return false;
+
+  tree_code rhs_code = gimple_assign_rhs_code (stmt);
+  if (rhs_code == BIT_AND_EXPR)
+    and_stmt = stmt;
+  else if (rhs_code == BIT_IOR_EXPR)
+    ior_stmt = stmt;
+  else
+    return false;
+
+  stmt = block_has_single_assignment (middle2);
+  if (!stmt || !stmt_is_eligible_canonicalize (stmt, true))
+    return false;
+
+  rhs_code = gimple_assign_rhs_code (stmt);
+  if (rhs_code == BIT_AND_EXPR)
+    and_stmt = stmt;
+  else if (rhs_code == BIT_IOR_EXPR)
+    ior_stmt = stmt;
+  else
+    return false;
+
+  if (!ior_stmt || !and_stmt)
+    return false;
+
+   /* Check if ior_stmt is executed via a TRUE_EDGE from cond_bb.
+      The reason is that 'move_conditional_ops' can't handle
+      a BIT_AND as op1_stmt.  */
+  edge e = single_pred_edge (ior_stmt->bb);
+  if (!(e->flags & EDGE_TRUE_VALUE))
+    return false;
+
+  /* ior_stmt and and_stmt must use the same RHS1.  */
+  if (gimple_assign_rhs1 (ior_stmt) != gimple_assign_rhs1 (and_stmt))
+    return false;
+
+  /* Using the same semantics 'move_conditional_ops' expects, e.g.
+     e1 being the edge that recreates the op1_stmt immediate and
+     e2 being the edge that returns 0:
+     - check if the PHI arg for e1 is ior_stmt LHS;
+     - check if the PHI arg for e2 is and_stmt LHS.  */
+  edge e1 = single_succ_edge (ior_stmt->bb);
+  edge e2 = single_succ_edge (and_stmt->bb);
+  tree arg0 = gimple_phi_arg_def (phi, e1->dest_idx);
+  tree arg1 = gimple_phi_arg_def (phi, e2->dest_idx);
+
+  if (arg0 != gimple_assign_lhs (ior_stmt)
+      || arg1 != gimple_assign_lhs (and_stmt))
+    return false;
+
+  /* Calculate the shift immediate from the constants found
+     in ior_stmt and and_stmt.  */
+  int bitop_shift = bitops_uses_same_shift_imm (ior_stmt, and_stmt);
+  if (bitop_shift < 0)
+    return false;
+
+  return move_conditional_ops (e1, e2, phi, ior_stmt, and_stmt,
+			       bitop_shift);
+}
+
+static bool
+canonicalize_conditional_ops (basic_block middle1, basic_block middle2,
 			      edge e1, edge e2, gphi *phi,
 			      tree arg0, tree arg1)
 {
@@ -2870,6 +3003,9 @@ canonicalize_conditional_ops (basic_block middle1,
      to support phis with 2+ nodes in the future.  */
   if (EDGE_COUNT (phi->bb->preds) != 2)
     return false;
+
+  if (middle2)
+    return canonicalize_multiple_bitops (middle1, middle2, phi);
 
   /* Check if the middle1 has a single stmt or a
      single stmt + a goto.  */
@@ -2886,7 +3022,7 @@ canonicalize_conditional_ops (basic_block middle1,
     return false;
 
   tree rhs2 = gimple_assign_rhs2 (op1_stmt);
-  return move_conditional_ops (e1, e2, phi, op1_stmt,
+  return move_conditional_ops (e1, e2, phi, op1_stmt, NULL,
 			       wi::ctz (TREE_INT_CST_LOW (rhs2)));
 }
 
@@ -4262,8 +4398,8 @@ pass_phiopt::execute (function *)
 	cfgchanged = true;
       else if (!early_p
 	       && single_pred_p (bb1)
-	       && !diamond_p
-	       && canonicalize_conditional_ops (bb1, e1, e2, phi, arg0, arg1))
+	       && canonicalize_conditional_ops (bb1, diamond_p ? bb2 : NULL,
+						e1, e2, phi, arg0, arg1))
 	cfgchanged = true;
     };
 
