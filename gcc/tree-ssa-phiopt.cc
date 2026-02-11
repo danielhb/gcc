@@ -2703,10 +2703,41 @@ cond_removal_in_builtin_zero_pattern (basic_block cond_bb,
   return true;
 }
 
+/* Check if a BB has a single assignment or a single assignment
+   and a GOTO.  Return the gimple assignment or NULL if
+   the BB does not match the criteria.  */
+
+static gimple*
+block_has_single_assignment (basic_block bb)
+{
+  gimple_stmt_iterator gsi = gsi_start_nondebug_after_labels_bb (bb);
+  gimple *stmt = gsi_stmt (gsi);
+
+  if (!stmt || !is_gimple_assign (stmt))
+    return NULL;
+
+  gsi = gsi_last_nondebug_bb (bb);
+  gimple *last_stmt = gsi_stmt (gsi);
+
+  if (!last_stmt)
+    return NULL;
+
+  if (gimple_code (last_stmt) == GIMPLE_GOTO)
+    {
+      gsi_prev (&gsi);
+      last_stmt = gsi_stmt (gsi);
+    }
+
+  if (last_stmt != stmt)
+    return NULL;
+
+  return stmt;
+}
+
 static bool
 move_conditional_ops (edge e1, edge e2, gphi *phi,
 		      gimple *op1_stmt,
-		      unsigned HOST_WIDE_INT result_imm)
+		      unsigned HOST_WIDE_INT imm_shift)
 {
   if (!dbg_cnt (phiopt_cond_ops))
     return false;
@@ -2730,34 +2761,36 @@ move_conditional_ops (edge e1, edge e2, gphi *phi,
 		   wide_int_to_tree (immediate_type, 0));
 
   gimple_stmt_iterator gsi, gsi_from;
+  gimple *immediate_stmt;
 
-  /* The result_stmt is a LSHIFT that will receive the new phi
-     result 0/1 to re-create the immediate.  */
+  /* The immediate_stmt is a LSHIFT that will receive the new
+     phi result 0/1 to re-create the immediate.  */
   tree lshift = make_ssa_name (immediate_type);
-  tree result_imm_tree = wide_int_to_tree (immediate_type, result_imm);
-  gimple *result_stmt = gimple_build_assign (lshift, LSHIFT_EXPR, new_phi_res,
-					     result_imm_tree);
-  SSA_NAME_DEF_STMT (lshift) = result_stmt;
+  tree imm_tree = wide_int_to_tree (immediate_type, imm_shift);
+  immediate_stmt = gimple_build_assign (lshift, LSHIFT_EXPR,
+					new_phi_res, imm_tree);
+  SSA_NAME_DEF_STMT (lshift) = immediate_stmt;
 
   gsi = gsi_start_nondebug_after_labels_bb (phi->bb);
-  gsi_insert_before (&gsi, result_stmt, GSI_SAME_STMT);
+  gsi_insert_before (&gsi, immediate_stmt, GSI_SAME_STMT);
 
   /* op1_stmt handling:
-    - rhs2 must be changed to LHS (result_stmt)
-    - must be placed after result_stmt.  */
+    - rhs2 must be changed to LHS (immediate_stmt)
+    - must be placed after immediate_stmt.  */
   gsi_from = gsi_for_stmt (op1_stmt);
-  gsi = gsi_for_stmt (result_stmt);
+  gsi = gsi_for_stmt (immediate_stmt);
   gsi_move_after (&gsi_from, &gsi);
 
-  tree new_rhs2 = gimple_assign_lhs (result_stmt);
+  tree new_rhs2 = gimple_assign_lhs (immediate_stmt);
   gimple_assign_set_rhs2 (op1_stmt, new_rhs2);
 
   update_stmt (op1_stmt);
   reset_flow_sensitive_info (gimple_assign_lhs (op1_stmt));
 
   /* We'll have to replace all phi_res instances.  Ideally
-     we could just use op1_stmt LHS, but create a new var
-     with phi_res type and use it instead.  */
+     we could just use op1_stmt LHS but there's no guarantee
+     that it will match the existing PHI type, so create a
+     cast  with phi_res type and use it instead.  */
   tree phi_res = gimple_phi_result (phi);
   tree phi_type = TREE_TYPE (phi_res);
   tree phi_replace = make_ssa_name (phi_type, NULL);
@@ -2791,44 +2824,13 @@ move_conditional_ops (edge e1, edge e2, gphi *phi,
   return true;
 }
 
-/* Check if a BB has a single assignment or a single assignment
-   and a GOTO.  Return the gimple assignment or NULL if
-   the BB does not match the criteria.  */
-
-static gimple*
-block_has_single_assignment (basic_block bb)
-{
-  gimple_stmt_iterator gsi = gsi_start_nondebug_after_labels_bb (bb);
-  gimple *stmt = gsi_stmt (gsi);
-
-  if (!stmt || !is_gimple_assign (stmt))
-    return NULL;
-
-  gsi = gsi_last_nondebug_bb (bb);
-  gimple *last_stmt = gsi_stmt (gsi);
-
-  if (!last_stmt)
-    return NULL;
-
-  if (gimple_code (last_stmt) == GIMPLE_GOTO)
-    {
-      gsi_prev (&gsi);
-      last_stmt = gsi_stmt (gsi);
-    }
-
-  if (last_stmt != stmt)
-    return NULL;
-
-  return stmt;
-}
-
 static bool
 canonicalize_conditional_ops (basic_block middle1,
 			      edge e1, edge e2, gphi *phi,
 			      tree arg0, tree arg1)
 {
-  /* Limit the number of phi nodes to 2.
-     ??? Do we need to check that?  */
+  /* Limit the number of phi nodes to 2 in case phiopt starts
+     to support phis with 2+ nodes in the future.  */
   if (EDGE_COUNT (phi->bb->preds) != 2)
     return false;
 
@@ -2836,11 +2838,6 @@ canonicalize_conditional_ops (basic_block middle1,
      an IOR or an AND) or a single stmt + a goto.  */
   gimple *op1_stmt = block_has_single_assignment (middle1);
   if (!op1_stmt)
-    return false;
-
-  /* Check if op1_stmt is coming from the TRUE edge of cond_bb.  */
-  edge e = single_pred_edge (op1_stmt->bb);
-  if (!(e->flags & EDGE_TRUE_VALUE))
     return false;
 
   /* Check if op1_stmt is a binary op in the format
@@ -2856,12 +2853,8 @@ canonicalize_conditional_ops (basic_block middle1,
   tree rhs1 = gimple_assign_rhs1 (op1_stmt);
   tree rhs2 = gimple_assign_rhs2 (op1_stmt);
   if (TREE_CODE (rhs1) != SSA_NAME
-      || TREE_CODE (rhs2) != INTEGER_CST
-      || TREE_CODE (TREE_TYPE (rhs1)) != INTEGER_TYPE)
-    return false;
-
-  /* Filter out negative immediate vals.  */
-  if (!TYPE_UNSIGNED (TREE_TYPE (rhs2)) && tree_int_cst_sgn (rhs2) < 0)
+      || !INTEGRAL_TYPE_P (TREE_TYPE (rhs1))
+      || TREE_CODE (rhs2) != INTEGER_CST)
     return false;
 
   switch (gimple_assign_rhs_code (op1_stmt))
@@ -2875,12 +2868,16 @@ canonicalize_conditional_ops (basic_block middle1,
 	return false;
     }
 
-  unsigned HOST_WIDE_INT imm_val = TREE_INT_CST_LOW (rhs2);
-  if (popcount_hwi (imm_val) != 1)
+  /* Only work with unsigned/positive immediates.  */
+  if (!TYPE_UNSIGNED (TREE_TYPE (rhs2)) && tree_int_cst_sgn (rhs2) < 0)
+    return false;
+
+  /* Only pow2 immediates are supported for now.  */
+  if (!integer_pow2p (rhs2))
     return false;
 
   return move_conditional_ops (e1, e2, phi, op1_stmt,
-			       wi::ctz (imm_val));
+			       wi::ctz (TREE_INT_CST_LOW (rhs2)));
 }
 
 /* Auxiliary functions to determine the set of memory accesses which
