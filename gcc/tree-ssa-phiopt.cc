@@ -3115,6 +3115,252 @@ cond_store_replacement (basic_block middle_bb, basic_block join_bb,
   return true;
 }
 
+/* Return TRUE if STMT is a memory load, FALSE otherwise.  */
+
+static bool
+stmt_is_memory_load_assignment (gimple *stmt)
+{
+  if (!stmt
+      || !gimple_assign_single_p (stmt)
+      || gimple_has_volatile_ops (stmt)
+      || !gimple_references_memory_p (stmt))
+    return false;
+
+  tree rhs1 = gimple_assign_rhs1 (stmt);
+  if ((!REFERENCE_CLASS_P (rhs1)
+       && !DECL_P (rhs1))
+      || !is_gimple_reg_type (TREE_TYPE (rhs1)))
+    return false;
+
+  return true;
+}
+
+/* Return TRUE if STMT is a memory store, FALSE otherwise.  */
+
+static bool
+stmt_is_memory_store_assignment (gimple *stmt)
+{
+  /* Check if middle_bb contains of only one store.  */
+  if (!stmt
+      || !gimple_assign_single_p (stmt)
+      || gimple_has_volatile_ops (stmt)
+      || !gimple_references_memory_p (stmt))
+    return false;
+
+  tree lhs = gimple_assign_lhs (stmt);
+  if ((!REFERENCE_CLASS_P (lhs)
+       && !DECL_P (lhs))
+      || !is_gimple_reg_type (TREE_TYPE (lhs)))
+    return false;
+
+  return true;
+}
+
+static bool
+cond_removal_mispredict_memop (basic_block cond_bb,
+			       basic_block middle_bb,
+			       ATTRIBUTE_UNUSED edge e1)
+{
+  if (!gimple_seq_empty_p (phi_nodes (middle_bb)))
+    return false;
+
+  /* middle_bb must have no PHI nodes and a store preceeding
+     a bitop.  E.g.:
+
+     _3 = _1 BITOP bitmask;
+     # .MEM_14 = VDEF <.MEM_11>
+     ptr_10->bits[word_num_12] = _3;  */
+  gimple_stmt_iterator gsi = gsi_last_nondebug_bb (middle_bb);
+  gimple *store_stmt = gsi_stmt (gsi);
+  if (!store_stmt)
+    return false;
+
+  if (!stmt_is_memory_store_assignment (store_stmt))
+    return false;
+
+  gsi = gsi_start_nondebug_after_labels_bb (middle_bb);
+  gimple *bitop_stmt = gsi_stmt (gsi);
+
+  if (!is_gimple_assign (bitop_stmt))
+    return false;
+
+  gimple *not_stmt = NULL;
+  tree_code bitop_code = gimple_assign_rhs_code (bitop_stmt);
+
+  if (gimple_assign_rhs_code (bitop_stmt) != BIT_IOR_EXPR)
+    {
+      /* For a bit clear case we're expecting a pattern like this:
+	 if (_2 != 0)
+	   goto <bb 4>; [50.00%]
+	 else
+	   goto <bb 5>; [50.00%]
+
+	 ;;   basic block 4,
+	 _3 = ~bit_val_9;
+	 _4 = _1 & _3;
+	 # .MEM_14 = VDEF <.MEM_11>
+	 ptr_10->bitsD.4594[word_num_12] = _4;
+
+	 I.e. a neg statement that precedes an AND_EXPR.  */
+      if (gimple_assign_rhs_code (bitop_stmt) != BIT_NOT_EXPR)
+	return false;
+
+      not_stmt = bitop_stmt;
+      gsi_next (&gsi);
+      bitop_stmt = gsi_stmt (gsi);
+
+      if (gimple_assign_rhs_code (bitop_stmt) != BIT_AND_EXPR)
+	return false;
+    }
+
+  /* Verify that after bitop_stmt we only have store_stmt.  */
+  gsi_next (&gsi);
+  if (gsi_stmt (gsi) != store_stmt)
+    return false;
+
+  /* Check if the register being stored by 'store_stmt'
+     is the result of the previous bitop_stmt.  */
+  tree store_rhs1 = gimple_assign_rhs1 (store_stmt);
+  if (SSA_NAME_DEF_STMT (store_rhs1) != bitop_stmt)
+    return false;
+
+  /* One of the BITOP operands must be a memory load.  */
+  tree memreg = NULL_TREE, bitmask;
+
+  if (stmt_is_memory_load_assignment (
+      SSA_NAME_DEF_STMT (gimple_assign_rhs1 (bitop_stmt))))
+    {
+      memreg = gimple_assign_rhs1 (bitop_stmt);
+      bitmask = gimple_assign_rhs2 (bitop_stmt);
+    }
+  else if (stmt_is_memory_load_assignment (
+	   SSA_NAME_DEF_STMT (gimple_assign_rhs2 (bitop_stmt))))
+    {
+      memreg = gimple_assign_rhs2 (bitop_stmt);
+      bitmask = gimple_assign_rhs1 (bitop_stmt);
+    }
+
+  if (!memreg)
+    return false;
+
+  /* For the conditional bitclear case 'bitmask' is currently
+     pointing to the LHS of the not_stmt, and the actual bitmask
+     we want to verify is its RHS1.  */
+  if (not_stmt)
+    {
+      if (gimple_assign_lhs (not_stmt) == bitmask)
+	bitmask = gimple_assign_rhs1 (not_stmt);
+      else
+	return false;
+    }
+
+  gimple *load_stmt = SSA_NAME_DEF_STMT (memreg);
+
+  /* Check if ior_stmt is using the same memreg as the load:
+
+     (cond_bb)
+     # VUSE <.MEM_11>
+     _1 = ptr_10->bits[word_num_12];
+
+     (middle_bb)
+     _3 = _1 | bitmask;
+     # .MEM_14 = VDEF <.MEM_11>
+     ptr_10->bits[word_num_12] = _3;  */
+  tree vuse = gimple_vuse (load_stmt);
+  if (!vuse || TREE_CODE (vuse) != SSA_NAME)
+    return false;
+  vuse = SSA_NAME_VAR (vuse);
+
+  tree vdef = gimple_vdef (store_stmt);
+  if (!vdef || TREE_CODE (vdef) != SSA_NAME)
+    return false;
+  vdef = SSA_NAME_VAR (vdef);
+
+  if (vuse != vdef)
+    return false;
+
+  /* Finally, check if the conditional has the following format:
+
+     # VUSE <.MEM_11>
+     _1 = ptr_10->bits[word_num_12];
+     _2 = _1 & bitmask;
+     if (_2 ==/!= 0)
+       goto <bb 4>; [50.00%]
+     else
+       goto <bb 5>; [50.00%]
+
+    I.e. there is a check for an absent bitmask (_2 == 0)
+    or a check for an existing bitmask (_2 != 0).  The
+    absent bitmask check coincides with BITOP setting the
+    bitmask, i.e. an IOR_EXPR, and checking if bitmask is
+    set couples with a bit clear operation (BIT_AND).  */
+  gcond *cond = safe_dyn_cast <gcond *> (*gsi_last_bb (cond_bb));
+  if (!cond)
+    return false;
+
+  if (TREE_CODE (gimple_cond_lhs (cond)) != SSA_NAME)
+    return false;
+
+  if (!integer_zerop (gimple_cond_rhs (cond)))
+    return false;
+
+  gimple *cond_stmt = SSA_NAME_DEF_STMT (gimple_cond_lhs (cond));
+  tree_code cond_code = gimple_cond_code (cond);
+
+  if (cond_code != EQ_EXPR && cond_code != NE_EXPR)
+    return false;
+
+  if (gimple_cond_code (cond) == EQ_EXPR
+      && gimple_assign_rhs_code (bitop_stmt) != BIT_IOR_EXPR)
+    return false;
+  else if (gimple_cond_code (cond) == NE_EXPR
+	   && gimple_assign_rhs_code (bitop_stmt) != BIT_AND_EXPR)
+    return false;
+
+  tree cond_rhs1 = gimple_assign_rhs1 (cond_stmt);
+  tree cond_rhs2 = gimple_assign_rhs2 (cond_stmt);
+  if ((cond_rhs1 == memreg && cond_rhs2 == bitmask)
+      || (cond_rhs2 == memreg && cond_rhs1 == bitmask))
+    {
+      /* At this point we're certain we can always execute
+	 the store.  We could make more analysis to determine
+	 if the gcond result is being used as a PHI result,
+	 or we can just move things to cond_bb, right before
+	 the gcond, and trust that cfg_cleanup will do
+	 the right thing.  */
+      gimple_stmt_iterator gsi = gsi_for_stmt (cond);
+      gimple_stmt_iterator gsi_from;
+
+      if (not_stmt)
+	{
+	  gsi_from = gsi_for_stmt (not_stmt);
+	  gsi_move_before (&gsi_from, &gsi);
+	  update_stmt (not_stmt);
+	}
+
+      gsi_from = gsi_for_stmt (bitop_stmt);
+      gsi_move_before (&gsi_from, &gsi);
+      update_stmt (bitop_stmt);
+
+      gsi_from = gsi_for_stmt (store_stmt);
+      gsi_move_before (&gsi_from, &gsi);
+      update_stmt (store_stmt);
+
+      if (dump_file && (dump_flags & TDF_DETAILS))
+	{
+	  fprintf (dump_file, "\n Conditional store turned unconditional.");
+	  print_gimple_stmt (dump_file, store_stmt, 0, TDF_VOPS|TDF_MEMSYMS);
+	}
+
+      statistics_counter_event (cfun,
+				"conditional store turned unconditional", 1);
+
+      return true;
+    }
+
+  return false;
+}
+
 /* Do the main work of conditional store replacement.  */
 
 static bool
@@ -4255,11 +4501,14 @@ pass_cselim::execute (function *)
 	return;
 
       /* bb1 is the middle block, bb2 the join block, bb the split block,
-	 e1 the fallthrough edge from bb1 to bb2.  We can't do the
-	 optimization if the join block has more than two predecessors.  */
-      if (EDGE_COUNT (bb2->preds) > 2)
-	return;
-      if (cond_store_replacement (bb1, bb2, e1, e2, nontrap))
+	 e1 the fallthrough edge from bb1 to bb2.  */
+
+      /* We can't do cond_store_replacement if the join block has more
+	 than two predecessors.  */
+      if (EDGE_COUNT (bb2->preds) <= 2
+	  && cond_store_replacement (bb1, bb2, e1, e2, nontrap))
+	cfgchanged = true;
+      else if (cond_removal_mispredict_memop (bb, bb1, e1))
 	cfgchanged = true;
     };
 
