@@ -5367,6 +5367,17 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
       @0)))))
 #endif
 
+/* PR119420: (A >> bool) == 0 -> (unsigned)a <= (unsigned)bool
+
+   We're not adding its NE counterpart:
+   "(A>>bool) != 0 -> (unsigned)A) > bool"
+   Because it collides with patterns that handles builtin_clz, as
+   shown in clz-complement-int.c tree-ssa test.  */
+(simplify
+ (eq (rshift @0 zero_one_valued_p@1) integer_zerop)
+ (with { tree utype = unsigned_type_for (TREE_TYPE (@0)); }
+  (le (convert:utype @0) (convert:utype @1))))
+
 /* Rewrite an LROTATE_EXPR by a constant into an
    RROTATE_EXPR by a new constant.  */
 (simplify
