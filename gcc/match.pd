@@ -5373,6 +5373,13 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
  (with { tree utype = unsigned_type_for (TREE_TYPE (@0));  }
  (le (convert:utype @0) (convert:utype @1))))
 
+/* (bool >= A) >= A  -> bool >= A */
+(simplify
+ (ge (convert? (ge zero_one_valued_p@0 @1)) @1)
+ (with { tree type1 = TREE_TYPE (@1);  }
+  (if (TYPE_UNSIGNED (type1))
+   (ge @0 @1))))
+
 /* Rewrite an LROTATE_EXPR by a constant into an
    RROTATE_EXPR by a new constant.  */
 (simplify
