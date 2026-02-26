@@ -1454,6 +1454,42 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
   (if (TYPE_UNSIGNED (type))
     (bit_and @0 (bit_not (lshift { build_all_ones_cst (type); } @1)))))
 
+#if GIMPLE
+/* PR124019: A << CST1 EQ|NE CST2 -> (A & CSTmask) EQ|NE (CST2 >> CST1);  */
+(for cmp (eq ne)
+ (simplify
+  (cmp (lshift@3 @0 INTEGER_CST@1) INTEGER_CST@2)
+   (if (INTEGRAL_TYPE_P (TREE_TYPE (@0))
+	&& single_use (@3)
+	&& tree_fits_uhwi_p (@1)
+	&& tree_to_uhwi (@1) < TYPE_PRECISION (TREE_TYPE (@0))
+	&& tree_to_uhwi (@1) < TYPE_PRECISION (TREE_TYPE (@2)))
+    (with {
+      unsigned prec2 = TYPE_PRECISION (TREE_TYPE (@2));
+      wide_int cst2_mask = wi::mask (tree_to_uhwi (@1), false, prec2);
+     }
+     /* We need to assert that CST2 lower CST1 bits are zero for the
+	transformation to be valid.  This seem to be already taken
+	care of	by CCP, turning cases like "a << 4 == 17" into
+	"return 0", and this check might be redundant.  We can't rely
+	on CCP always having our backs though, therefore validate the
+	zero bits here to be sure.  */
+     (if (wi::to_wide (@2) == 0
+	  || wi::eq_p (wi::bit_and (cst2_mask, wi::to_wide (@2)),
+		       wi::zero (prec2)))
+      (with {
+	unsigned prec = TYPE_PRECISION (TREE_TYPE (@0));
+	unsigned mask_len = prec - tree_to_uhwi (@1);
+	tree cst1_mask = wide_int_to_tree (TREE_TYPE (@0),
+					   wi::mask (mask_len, false, prec));
+	tree type3 = TREE_TYPE (@3);
+	wide_int lrshift = wi::lrshift (wi::to_wide (@2), wi::to_wide (@1));
+	tree cst_lrshift = wide_int_to_tree (type3, lrshift);
+      }
+      (cmp (convert:type3 (bit_and @0 { cst1_mask; }))
+	   { cst_lrshift; })))))))
+#endif
+
 (for bitop (bit_and bit_ior)
      cmp (eq ne)
  /* PR35691: Transform

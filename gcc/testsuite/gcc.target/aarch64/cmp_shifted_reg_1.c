@@ -4,7 +4,7 @@
 int f3 (int x, int y)
 {
   int res = x << 3;
-  return res != 0;
+  return res > 0;
 }
 
 /* We should combine the shift and compare */
