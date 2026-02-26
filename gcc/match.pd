@@ -1454,6 +1454,30 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
   (if (TYPE_UNSIGNED (type))
     (bit_and @0 (bit_not (lshift { build_all_ones_cst (type); } @1)))))
 
+/* PR124019: A << CST1 EQ|NE CST2 -> (A & CSTmask) EQ|NE (CST2 >> CST1);  */
+(for cmp (eq ne)
+ (simplify
+  (cmp (lshift@3 @0 INTEGER_CST@1) INTEGER_CST@2)
+   (if (INTEGRAL_TYPE_P (TREE_TYPE (@0))
+	&& TREE_INT_CST_LOW (@1) <= TYPE_PRECISION (TREE_TYPE (@0))
+	/* The "A << 1 != CST1" pattern is used in trailing zero
+	   count detection to determine if a loop consists of a
+	   CTZ call, and that generates better code than what
+	   we're doing here.  See pr114760-1.c, ntz32_3() for
+	   more info.  */
+	&& (!(cmp == NE_EXPR && TREE_INT_CST_LOW (@1) == 1)))
+    (with {
+      tree type0 = TREE_TYPE (@0);
+      tree type3 = TREE_TYPE (@3);
+      unsigned prec = TYPE_PRECISION (type0);
+      unsigned mask_len = prec - TREE_INT_CST_LOW (@1);
+      wide_int cst1_mask = wi::mask (mask_len, false, prec);
+      wide_int res = wi::lrshift (wi::to_wide (@2), wi::to_wide (@1));
+    }
+     (cmp (convert:type3
+	    (bit_and @0 { wide_int_to_tree (type0, cst1_mask); }))
+	  { wide_int_to_tree (type3, res); })))))
+
 (for bitop (bit_and bit_ior)
      cmp (eq ne)
  /* PR35691: Transform
