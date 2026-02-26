@@ -20,14 +20,16 @@ negs_si_test1 (int a, int b, int c)
 int
 negs_si_test3 (int a, int b, int c)
 {
-  int d = -(b) << 3;
+  int d = -(b) << 1;
 
-  /* { dg-final { scan-assembler "negs\tw\[0-9\]+, w\[0-9\]+, lsl 3" } } */
-  if (d == 0)
-    return a + c;
+  /* { dg-final { scan-assembler "negs\tw\[0-9\]+, w\[0-9\]+, lsl 1" } } */
+  if (d != 0)
+    {
+      z = d;
+      return b + c + d;
+    }
 
-  z = d;
-    return b + c + d;
+  return a + c;
 }
 
 typedef long long s64;
@@ -49,14 +51,16 @@ negs_di_test1 (s64 a, s64 b, s64 c)
 s64
 negs_di_test3 (s64 a, s64 b, s64 c)
 {
-  s64 d = -(b) << 3;
+  s64 d = -(b) << 1;
 
-  /* { dg-final { scan-assembler "negs\tx\[0-9\]+, x\[0-9\]+, lsl 3" } } */
-  if (d == 0)
-    return a + c;
+  /* { dg-final { scan-assembler "negs\tx\[0-9\]+, x\[0-9\]+, lsl 1" } } */
+  if (d != 0)
+    {
+      zz = d;
+      return b + c + d;
+    }
 
-  zz = d;
-    return b + c + d;
+  return a + c;
 }
 
 int main ()
@@ -73,11 +77,11 @@ int main ()
     abort ();
 
   x = negs_si_test3 (13, 14, 5);
-  if (x != -93)
+  if (x != -9)
     abort ();
 
   x = negs_si_test3 (15, 21, 2);
-  if (x != -145)
+  if (x != -19)
     abort ();
 
   y = negs_di_test1 (0x20202020ll,
@@ -95,13 +99,13 @@ int main ()
   y = negs_di_test3 (0x62523781ll,
 		     0x64234978ll,
 		     0x12345123ll);
-  if (y != 0xfffffffd553d4edbll)
+  if (y != 0xffffffffae1107abll)
     abort ();
 
   y = negs_di_test3 (0x763526268ll,
 		     0x101010101ll,
 		     0x222222222ll);
-  if (y != 0xfffffffb1b1b1b1bll)
+  if (y != 0x0000000121212121ll)
     abort ();
 
   return 0;

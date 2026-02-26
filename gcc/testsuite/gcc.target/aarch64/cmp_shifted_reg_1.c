@@ -3,9 +3,9 @@
 
 int f3 (int x, int y)
 {
-  int res = x << 3;
+  int res = x << 1;
   return res != 0;
 }
 
 /* We should combine the shift and compare */
-/* { dg-final { scan-assembler "cmp\.*\twzr, w\[0-9\]+, lsl 3" } } */
+/* { dg-final { scan-assembler "cmp\.*\twzr, w\[0-9\]+, lsl 1" } } */
