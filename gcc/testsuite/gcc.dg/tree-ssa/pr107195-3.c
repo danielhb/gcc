@@ -1,6 +1,6 @@
 /* Inspired by 'libgomp.oacc-c-c++-common/nvptx-sese-1.c'.  */
 
-/* { dg-additional-options -O1 } */
+/* { dg-additional-options -O2 } */
 /* { dg-additional-options -fdump-tree-dom3-raw } */
 
 

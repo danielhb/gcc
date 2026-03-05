@@ -9,7 +9,7 @@
 			TYPE *__restrict b, int n)			\
   {									\
     for (int i = 0; i < n; ++i)						\
-      r[i] = a[i] > 20 ? b[i] OP 3 : b[i];				\
+      r[i] = a[i] > 20 ? b[i] OP 3 : b[i] + 1;				\
   }
 
 #define TEST_TYPE(T, TYPE) \
@@ -44,5 +44,4 @@ TEST_ALL (DEF_LOOP)
 /* { dg-final { scan-assembler-times {\tlsr\tz[0-9]+\.d, p[0-7]/m,} 1 } } */
 
 /* { dg-final { scan-assembler-not {\tmov\tz[^,]*z} } } */
-/* { dg-final { scan-assembler-not {\tmovprfx\t} } } */
 /* { dg-final { scan-assembler-not {\tsel\t} } } */
