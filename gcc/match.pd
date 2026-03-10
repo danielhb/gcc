@@ -8642,6 +8642,137 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
    replace if (x == 0) with tem = ~x; if (tem != 0) which is
    clearly less optimal and which we'll transform again in forwprop.  */
 
+/* PR101179: decompose the following zero_one patterns than creates
+   two CSTs into a cond based format. E.g:
+
+   A OP (4 << (zero_one * 2)) ->  A OP (zero_one ? 16 : 4)
+
+   This will give optimizations like PR122608 the opportunity to
+   turn this further into:
+
+   "zero_one ? A OP CST1 : A OP CST2".  */
+(for op (plus minus mult bit_and bit_ior bit_xor lshift rshift
+	 rdiv trunc_div ceil_div floor_div round_div exact_div
+	 trunc_mod ceil_mod floor_mod round_mod)
+ (for shift (lshift rshift)
+
+  /* A OP ((CST1 shift (zero_one * CST2))) ->
+     A OP (zero_one ? CST1 shift CST2 : CST1) */
+  (simplify
+   (op @0 (shift INTEGER_CST@1
+                 (mult:c (convert? zero_one_valued_p@2) INTEGER_CST@3)))
+   (op @0 (cond @2 (shift @1 @3) @1)))
+  (simplify
+   (op (shift INTEGER_CST@1
+              (mult:c (convert? zero_one_valued_p@2) INTEGER_CST@3))
+        @0)
+   (op (cond @2 (shift @1 @3) @1) @0))
+
+  /* A OP ((CST1 shift (zero_one*CST2)) + CST3) ->
+     A OP (zero_one ? (CST1 shift CST2) + CST3 : CST1 + CST3) */
+  (simplify
+   (op @0 (plus:c
+           (shift INTEGER_CST@1
+		   (mult:c (convert? zero_one_valued_p@2) INTEGER_CST@3))
+	   INTEGER_CST@4))
+   (op @0 (cond @2 (plus (shift @1 @3) @4) (plus @1 @4))))
+  (simplify
+   (op (plus:c
+        (shift INTEGER_CST@1
+		(mult:c (convert? zero_one_valued_p@2) INTEGER_CST@3))
+	INTEGER_CST@4)
+       @0)
+   (op (cond @2 (plus (shift @1 @3) @4) (plus @1 @4)) @0))
+
+  /* A OP (zero_one shift CST1) ->  A OP (zero_one ? (1 shift CST1) : 0) */
+  (simplify
+   (op @0 (shift zero_one_valued_p@2 INTEGER_CST@1))
+   (op @0 (cond @2 (shift { build_one_cst (TREE_TYPE (@1)); } @1)
+		   { build_zero_cst (TREE_TYPE (@1)); })))
+  (simplify
+   (op (shift zero_one_valued_p@2 INTEGER_CST@1) @0)
+   (op (cond @2 (shift { build_one_cst (TREE_TYPE (@1)); } @1)
+		{ build_zero_cst (TREE_TYPE (@1)); })
+       @0))
+
+  /* A OP ((zero_one shift CST1) + CST2) ->
+     A OP (zero_one ? (1 shift CST1) + CST2 : CST2) */
+  (simplify
+   (op @0 (plus:c (shift zero_one_valued_p@2 INTEGER_CST@1) INTEGER_CST@3))
+   (op @0 (cond @2 (plus (shift { build_one_cst (TREE_TYPE (@1)); } @1) @3)
+		   @3)))
+  (simplify
+   (op (plus:c (shift zero_one_valued_p@2 INTEGER_CST@1) INTEGER_CST@3) @0)
+   (op (cond @2 (plus (shift { build_one_cst (TREE_TYPE (@1)); } @1) @3) @3)
+       @0))
+ ))
+
+/* PR101179: if cond (cmp (OP A B) C) (cmp (OP A D) C)
+
+   The idea here is to detect patterns like this C code:
+
+   (x ? (y%16) == 0 : (y%4) == 0)
+
+   That will generate phiopt dumps such as:
+
+   bb3:
+   _14 = y_9(D) & 15;
+   _3 = _14 == 0;
+   goto <bb 5>;
+
+   bb4:
+   _13 = y_9(D) & 3;
+   _6 = _13 == 0;
+
+   bb5:
+   # _5 = PHI <_6(4), _3(3)>
+   _7 = (intD.7) _5;
+
+   We want to turn that into a pattern more friendly to other
+   optimizations (like PR122608) by moving the comparison to
+   the merge block:
+
+      bb3:
+   _14 = y_9(D) & 15;
+   goto <bb 5>;
+
+   bb4:
+   _13 = y_9(D) & 3;
+
+   bb5:
+   # _5 = PHI <_6(4), _3(3)>
+   _6 = _5 == 0;
+   _7 = (intD.7) _5;
+
+   Note that several opcodes (plus/minus, div, min/max) do
+   not generate this pattern due to their own specific
+   comparison optimizations.  */
+(for op (mult bit_and bit_ior bit_xor lshift rshift
+         trunc_mod ceil_mod floor_mod round_mod)
+ (for cmp (simple_comparison)
+  (simplify
+   (cond @0 (cmp (op @1 @2) @4) (cmp (op @1 @3) @4))
+   (cmp (op @1 (cond @0 @2 @3)) @4)))
+)
+
+/* PR101179: A % (cond X pow2A pow2B) EQ|NE 0 ->
+             A & (cond X pow2A-1 pow2B-1) EQ|NE 0
+
+   Turning a comparison between a mod with a pow2 operand and zero
+   into a bit_and is usually done by the frontend.  However the
+   frontend (from C, at least) is not able to do this conversion
+   if the mod is using the result of a cond with two pow2 operands.  */
+(for op (trunc_mod ceil_mod floor_mod round_mod)
+ (for cmp (eq ne)
+  (simplify
+   (cmp (op @0 (cond@4 @3 integer_pow2p@1 integer_pow2p@2)) integer_zerop@5)
+    (if (INTEGRAL_TYPE_P (type)
+	 && INTEGRAL_TYPE_P (TREE_TYPE (@0))
+	 && tree_int_cst_sgn (@1) > 0
+	 && tree_int_cst_sgn (@2) > 0)
+     (cmp (bit_and @0 (minus @4 { build_one_cst (TREE_TYPE (@4)); } ))
+                      { build_zero_cst (TREE_TYPE (@0)); } )))))
+
 #if GIMPLE
 /* From fold_binary_op_with_conditional_arg handle the case of
    rewriting (a ? b : c) > d to a ? (b > d) : (c > d) when the
@@ -8658,7 +8789,7 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
        || !operation_could_trap_p (cmp, true, false, @3))
    (cond @0 (cmp!:type @1 @3) (cmp!:type @2 @3)))))
 
-/* Similar to above:
+/* PR 122608 - Similar to above:
    (c ? a : b) op d  ->  c ? (a op d) : (b op d)
    But with non-vector binary ops, most of them non-commutative.  */
 (for op (plus minus mult bit_and bit_ior bit_xor
