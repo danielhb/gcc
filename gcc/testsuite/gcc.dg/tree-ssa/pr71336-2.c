@@ -31,12 +31,16 @@ int main (void) {
     FAIL ();
   if (test (1) != 7)
     FAIL ();
+  if (test (2) != 3)
+    FAIL ();
   if (test (3) != 7)
     FAIL ();
 
   if (test2 (0) != 7)
     FAIL ();
   if (test2 (1) != 3)
+    FAIL ();
+  if (test2 (2) != 7)
     FAIL ();
   if (test2 (3) != 3)
     FAIL ();
@@ -47,12 +51,16 @@ int main (void) {
     FAIL ();
   if (test3 (2) != 3)
     FAIL ();
+  if (test3 (3) != 7)
+    FAIL ();
 
   if (test4 (0) != 7)
     FAIL ();
   if (test4 (1) != 3)
     FAIL ();
   if (test4 (2) != 7)
+    FAIL ();
+  if (test4 (3) != 3)
     FAIL ();
 
   return 0;
