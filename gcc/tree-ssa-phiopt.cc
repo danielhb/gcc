@@ -3185,7 +3185,6 @@ cond_removal_mispredict_memop (basic_block cond_bb,
     return false;
 
   gimple *not_stmt = NULL;
-  tree_code bitop_code = gimple_assign_rhs_code (bitop_stmt);
 
   if (gimple_assign_rhs_code (bitop_stmt) != BIT_IOR_EXPR)
     {
@@ -3209,6 +3208,9 @@ cond_removal_mispredict_memop (basic_block cond_bb,
       gsi_next (&gsi);
       bitop_stmt = gsi_stmt (gsi);
 
+      if (!is_gimple_assign (bitop_stmt))
+	return false;
+
       if (gimple_assign_rhs_code (bitop_stmt) != BIT_AND_EXPR)
 	return false;
     }
@@ -3221,20 +3223,25 @@ cond_removal_mispredict_memop (basic_block cond_bb,
   /* Check if the register being stored by 'store_stmt'
      is the result of the previous bitop_stmt.  */
   tree store_rhs1 = gimple_assign_rhs1 (store_stmt);
-  if (SSA_NAME_DEF_STMT (store_rhs1) != bitop_stmt)
+  if (TREE_CODE (store_rhs1) != SSA_NAME
+      || SSA_NAME_DEF_STMT (store_rhs1) != bitop_stmt)
     return false;
 
   /* One of the BITOP operands must be a memory load.  */
-  tree memreg = NULL_TREE, bitmask;
+  tree memreg = NULL_TREE, bitmask = NULL_TREE;
 
-  if (stmt_is_memory_load_assignment (
-      SSA_NAME_DEF_STMT (gimple_assign_rhs1 (bitop_stmt))))
+  if (TREE_CODE (gimple_assign_rhs1 (bitop_stmt)) == SSA_NAME
+      && TREE_CODE (gimple_assign_rhs2 (bitop_stmt)) == INTEGER_CST
+      && stmt_is_memory_load_assignment (
+		SSA_NAME_DEF_STMT (gimple_assign_rhs1 (bitop_stmt))))
     {
       memreg = gimple_assign_rhs1 (bitop_stmt);
       bitmask = gimple_assign_rhs2 (bitop_stmt);
     }
-  else if (stmt_is_memory_load_assignment (
-	   SSA_NAME_DEF_STMT (gimple_assign_rhs2 (bitop_stmt))))
+  else if (TREE_CODE (gimple_assign_rhs2 (bitop_stmt)) == SSA_NAME
+	   && TREE_CODE (gimple_assign_rhs1 (bitop_stmt)) == INTEGER_CST
+	   && stmt_is_memory_load_assignment (
+		SSA_NAME_DEF_STMT (gimple_assign_rhs2 (bitop_stmt))))
     {
       memreg = gimple_assign_rhs2 (bitop_stmt);
       bitmask = gimple_assign_rhs1 (bitop_stmt);
