@@ -3159,7 +3159,7 @@ stmt_is_memory_store_assignment (gimple *stmt)
 static bool
 cond_removal_mispredict_memop (basic_block cond_bb,
 			       basic_block middle_bb,
-			       ATTRIBUTE_UNUSED edge e1)
+			       basic_block join_bb)
 {
   if (!gimple_seq_empty_p (phi_nodes (middle_bb)))
     return false;
@@ -3231,7 +3231,7 @@ cond_removal_mispredict_memop (basic_block cond_bb,
   tree memreg = NULL_TREE, bitmask = NULL_TREE;
 
   if (TREE_CODE (gimple_assign_rhs1 (bitop_stmt)) == SSA_NAME
-      && TREE_CODE (gimple_assign_rhs2 (bitop_stmt)) == INTEGER_CST
+      && TREE_CODE (gimple_assign_rhs2 (bitop_stmt)) == SSA_NAME
       && stmt_is_memory_load_assignment (
 		SSA_NAME_DEF_STMT (gimple_assign_rhs1 (bitop_stmt))))
     {
@@ -3239,7 +3239,7 @@ cond_removal_mispredict_memop (basic_block cond_bb,
       bitmask = gimple_assign_rhs2 (bitop_stmt);
     }
   else if (TREE_CODE (gimple_assign_rhs2 (bitop_stmt)) == SSA_NAME
-	   && TREE_CODE (gimple_assign_rhs1 (bitop_stmt)) == INTEGER_CST
+	   && TREE_CODE (gimple_assign_rhs1 (bitop_stmt)) == SSA_NAME
 	   && stmt_is_memory_load_assignment (
 		SSA_NAME_DEF_STMT (gimple_assign_rhs2 (bitop_stmt))))
     {
@@ -3352,6 +3352,12 @@ cond_removal_mispredict_memop (basic_block cond_bb,
       gsi_from = gsi_for_stmt (store_stmt);
       gsi_move_before (&gsi_from, &gsi);
       update_stmt (store_stmt);
+
+      gphi *vphi = get_virtual_phi (join_bb);
+      edge e_cond_join = find_edge (cond_bb, join_bb);
+      SET_PHI_ARG_DEF (vphi, e_cond_join->dest_idx, gimple_vdef (store_stmt));
+
+      update_stmt (vphi);
 
       if (dump_file && (dump_flags & TDF_DETAILS))
 	{
@@ -4515,7 +4521,7 @@ pass_cselim::execute (function *)
       if (EDGE_COUNT (bb2->preds) <= 2
 	  && cond_store_replacement (bb1, bb2, e1, e2, nontrap))
 	cfgchanged = true;
-      else if (cond_removal_mispredict_memop (bb, bb1, e1))
+      else if (cond_removal_mispredict_memop (bb, bb1, bb2))
 	cfgchanged = true;
     };
 
