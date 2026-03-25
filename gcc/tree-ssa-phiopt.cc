@@ -3296,11 +3296,16 @@ cond_removal_mispredict_memop (basic_block cond_bb,
      else
        goto <bb 5>; [50.00%]
 
-    I.e. there is a check for an absent bitmask (_2 == 0)
-    or a check for an existing bitmask (_2 != 0).  The
-    absent bitmask check coincides with BITOP setting the
-    bitmask, i.e. an IOR_EXPR, and checking if bitmask is
-    set couples with a bit clear operation (BIT_AND).  */
+    I.e. there is a check for an absent bitmask (_2 == 0) or a check
+    for an existing bitmask (_2 != 0).  The absent bitmask check
+    coincides with BITOP setting the bitmask, i.e. an IOR_EXPR, and
+    checking if bitmask is set couples with a bit clear operation
+    (BIT_AND).  And, for all this to be true, middle_bb must be
+    reached via a TRUE_VALUE edge.  */
+  edge e_cond_middle = single_pred_edge (middle_bb);
+  if (!(e_cond_middle->flags & EDGE_TRUE_VALUE))
+    return false;
+
   gcond *cond = safe_dyn_cast <gcond *> (*gsi_last_bb (cond_bb));
   if (!cond)
     return false;
