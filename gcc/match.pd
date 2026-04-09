@@ -5371,19 +5371,27 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
 (for cmp (le lt ge gt)
  (simplify
   (cmp (rshift:s @0 INTEGER_CST@1) INTEGER_CST@2)
-  (if (cmp == LT_EXPR
-       || cmp == GE_EXPR)
+  (if (INTEGRAL_TYPE_P (TREE_TYPE (@0))
+       && tree_fits_shwi_p (@1)
+       && tree_to_shwi (@1) > 0
+       && tree_to_shwi (@1) < TYPE_PRECISION (TREE_TYPE (@0))
+       && tree_fits_shwi_p (@2)
+       && tree_to_shwi (@2) >= 0)
+
    /* No need to set the lower @1 bits of the resulting
       lshift for "<" and ">=" comparisons.  */
-   (cmp @0 (lshift @2 @1))
-    (with {
-      tree type2 = TREE_TYPE (@2);
-      unsigned prec = TYPE_PRECISION (type2);
-      unsigned mask_len = TREE_INT_CST_LOW (@1);
-      wide_int cst1_mask = wi::mask (mask_len, true, prec);
-    }
-    (gt @0 (bit_ior (lshift @2 @1)
-		    { wide_int_to_tree (type2, cst1_mask); }))))))
+   (if (cmp == LT_EXPR || cmp == GE_EXPR)
+    (cmp @0 (lshift @2 @1))
+
+     /* For "<=" and ">" set the lower @1 lshift bits.  */
+     (with {
+        tree type2 = TREE_TYPE (@2);
+        unsigned prec = TYPE_PRECISION (type2);
+        unsigned mask_len = TREE_INT_CST_LOW (@1);
+        wide_int cst1_mask = wi::mask (mask_len, true, prec);
+      }
+       (cmp @0 (bit_ior (lshift @2 @1)
+			{ wide_int_to_tree (type2, cst1_mask); })))))))
 
 /* Rewrite an LROTATE_EXPR by a constant into an
    RROTATE_EXPR by a new constant.  */
