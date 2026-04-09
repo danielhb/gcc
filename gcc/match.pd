@@ -5367,10 +5367,19 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
       @0)))))
 #endif
 
+/* PR124808 */
 (simplify
  (lt (rshift @0 INTEGER_CST@1) INTEGER_CST@2)
- (lt @0 (lshift @2 @1))
-)
+ (lt @0 (lshift @2 @1)))
+(simplify
+ (gt (rshift @0 INTEGER_CST@1) INTEGER_CST@2)
+ (with {
+    unsigned prec = TYPE_PRECISION (TREE_TYPE (@2));
+    unsigned mask_len = TREE_INT_CST_LOW (@1);
+    wide_int cst1_mask = wi::mask (mask_len, true, prec);
+  }
+  (gt @0 (bit_ior (lshift @2 @1)
+		  { wide_int_to_tree (type, cst1_mask); }))))
 
 /* Rewrite an LROTATE_EXPR by a constant into an
    RROTATE_EXPR by a new constant.  */
