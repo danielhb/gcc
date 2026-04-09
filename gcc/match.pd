@@ -5367,6 +5367,11 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
       @0)))))
 #endif
 
+(simplify
+ (lt (rshift @0 INTEGER_CST@1) INTEGER_CST@2)
+ (lt @0 (lshift @2 @1))
+)
+
 /* Rewrite an LROTATE_EXPR by a constant into an
    RROTATE_EXPR by a new constant.  */
 (simplify
