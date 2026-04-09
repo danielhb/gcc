@@ -5370,7 +5370,7 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
 /* PR124808 */
 (for cmp (le lt ge gt)
  (simplify
-  (cmp (rshift @0 INTEGER_CST@1) INTEGER_CST@2)
+  (cmp (rshift:s @0 INTEGER_CST@1) INTEGER_CST@2)
   (if (cmp == LT_EXPR
        || cmp == GE_EXPR)
    /* No need to set the lower @1 bits of the resulting
