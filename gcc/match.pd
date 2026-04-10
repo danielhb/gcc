@@ -5392,7 +5392,7 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
         tree type2 = TREE_TYPE (@2);
         unsigned prec = TYPE_PRECISION (type2);
         unsigned mask_len = TREE_INT_CST_LOW (@1);
-        wide_int cst1_mask = wi::mask (mask_len, true, prec);
+        wide_int cst1_mask = wi::mask (mask_len, false, prec);
       }
        (cmp @0 (bit_ior (lshift @2 @1)
 			{ wide_int_to_tree (type2, cst1_mask); })))))))
