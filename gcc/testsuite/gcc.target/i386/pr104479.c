@@ -12,7 +12,7 @@ cond_shr (unsigned int* __restrict dst,
   for(int x = 0; x < i_width; x++)
     {
       unsigned int temp = src[x] >> 3;
-      dst[x] =  temp > 255 ? temp : y[x];
+      dst[x] =  temp != 255 ? temp : y[x];
     }
 }
 
