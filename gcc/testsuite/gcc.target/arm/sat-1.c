@@ -26,7 +26,7 @@ int u1 (int x)
 
 int us1 (int x)
 {
-  return sat1 (x >> 5, 0, 63);
+  return sat1 (x << 5, 0, 63);
 }
 
 int s1 (int x)
@@ -46,7 +46,7 @@ int u2 (int x)
 
 int us2 (int x)
 {
-  return sat2 (x >> 5, 0, 63);
+  return sat2 (x << 5, 0, 63);
 }
 
 int s2 (int x)
