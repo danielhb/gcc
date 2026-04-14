@@ -56,7 +56,7 @@ int s2 (int x)
 
 int ss2 (int x)
 {
-  return sat2 (x >> 5, -64, 63);
+  return sat2 (x << 5, -64, 63);
 }
 
 /* { dg-final { scan-assembler-times "usat" 4 } } */
