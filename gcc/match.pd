@@ -5368,7 +5368,7 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
 #endif
 
 /* PR124808: (A >> CST1) CMP CST2 -> A CMP (CST2 << CST1)
-   Canolicalize non-equality comparisons between a right
+   Canonicalize non-equality comparisons between a right
    shift and a constant, turning it into a comparison
    with a constant that is left shifted.  If we view A as:
 
@@ -5394,15 +5394,13 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
  (simplify
   (cmp (rshift:s @0 INTEGER_CST@1) INTEGER_CST@2)
   (if (INTEGRAL_TYPE_P (TREE_TYPE (@0))
-       && tree_fits_shwi_p (@1)
-       && tree_to_shwi (@1) > 0
-       && tree_to_shwi (@1) < TYPE_PRECISION (TREE_TYPE (@0))
-       && tree_fits_shwi_p (@2)
-       && tree_to_shwi (@2) >= 0
+       && tree_fits_uhwi_p (@1)
+       && tree_to_uhwi (@1) < TYPE_PRECISION (TREE_TYPE (@0))
+       && tree_int_cst_sgn (@2) >= 0
        /* If @2 is nonzero check if we'll overflow when doing
 	  @2 << @1 by doing a wi::lshift and checking if the
 	  result is zero (i.e. overflow).  */
-       && (tree_to_shwi (@2) == 0
+       && (wi::to_wide (@2) == 0
 	   || !wi::eq_p (wi::lshift (wi::to_wide (@2), wi::to_wide (@1)),
 			 wi::zero (TYPE_PRECISION (TREE_TYPE (@2))))))
 
