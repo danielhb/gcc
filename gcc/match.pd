@@ -5373,10 +5373,12 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
    "(A>>bool) != 0 -> (unsigned)A) > bool"
    Because it collides with patterns that handles builtin_clz, as
    shown in clz-complement-int.c tree-ssa test.  */
+(for cmp (eq ne)
+     icmp (le gt)
 (simplify
- (eq (rshift:s @0 zero_one_valued_p@1) integer_zerop)
+ (cmp (rshift:s @0 zero_one_valued_p@1) integer_zerop)
  (with { tree utype = unsigned_type_for (TREE_TYPE (@0)); }
-  (le (convert:utype @0) (convert:utype @1))))
+  (icmp (convert:utype @0) (convert:utype @1)))))
 
 /* Rewrite an LROTATE_EXPR by a constant into an
    RROTATE_EXPR by a new constant.  */
