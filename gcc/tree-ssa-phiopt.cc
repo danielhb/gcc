@@ -3164,25 +3164,20 @@ stmt_is_memory_store_assignment (gimple *stmt)
 
 static bool
 cond_removal_mispredict_validate_memregs (gimple *store_stmt,
-					  tree memreg)
+					  tree memreg,
+					  hash_set<tree> *nontrap)
 {
   gimple *load_stmt = SSA_NAME_DEF_STMT (memreg);
-  tree vuse = gimple_vuse (load_stmt);
 
-  if (!vuse || TREE_CODE (vuse) != SSA_NAME)
-    return false;
-
-  vuse = SSA_NAME_VAR (vuse);
-  tree vdef = gimple_vdef (store_stmt);
-  if (!vdef || TREE_CODE (vdef) != SSA_NAME)
-    return false;
-
-  vdef = SSA_NAME_VAR (vdef);
-  if (vuse != vdef)
+  if (!operand_equal_p (gimple_assign_rhs1 (load_stmt),
+			gimple_assign_lhs (store_stmt)))
     return false;
 
   tree lhs = gimple_assign_lhs (store_stmt);
-  if (ref_can_have_store_data_races (lhs) && !flag_store_data_races)
+  if (!nontrap->contains (lhs) && tree_could_trap_p (lhs))
+    return false;
+
+  if (ref_can_have_store_data_races (lhs))
     return false;
 
   tree base = get_base_address (lhs);
@@ -3368,7 +3363,8 @@ cond_removal_mispredict_check_cond (gcond *cond, tree_code bitop_code,
 static bool
 cond_removal_mispredict_memop (basic_block cond_bb,
 			       basic_block middle_bb,
-			       basic_block join_bb)
+			       basic_block join_bb,
+			       hash_set<tree> *nontrap)
 {
   /* 'middle_bb' must have no PHI nodes, it must come via a
      TRUE_VALUE edge, and it must have a store preceeding
@@ -3482,7 +3478,7 @@ cond_removal_mispredict_memop (basic_block cond_bb,
     return false;
 
   /* Validate store_stmt LHS and memreg.  */
-  if (!cond_removal_mispredict_validate_memregs (store_stmt, memreg))
+  if (!cond_removal_mispredict_validate_memregs (store_stmt, memreg, nontrap))
     return false;
 
   gcond *cond = safe_dyn_cast <gcond *> (*gsi_last_bb (cond_bb));
@@ -4681,7 +4677,7 @@ pass_cselim::execute (function *)
       if (EDGE_COUNT (bb2->preds) <= 2
 	  && cond_store_replacement (bb1, bb2, e1, e2, nontrap))
 	cfgchanged = true;
-      else if (cond_removal_mispredict_memop (bb, bb1, bb2))
+      else if (cond_removal_mispredict_memop (bb, bb1, bb2, nontrap))
 	cfgchanged = true;
     };
 
