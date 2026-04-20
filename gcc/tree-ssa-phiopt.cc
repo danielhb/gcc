@@ -3122,14 +3122,9 @@ stmt_is_memory_load_assignment (gimple *stmt)
 {
   if (!stmt
       || !gimple_assign_single_p (stmt)
-      || gimple_has_volatile_ops (stmt)
+      || TREE_CODE (gimple_assign_lhs (stmt)) != SSA_NAME
+      || is_gimple_reg (gimple_assign_rhs1 (stmt))
       || !gimple_references_memory_p (stmt))
-    return false;
-
-  tree rhs1 = gimple_assign_rhs1 (stmt);
-  if ((!REFERENCE_CLASS_P (rhs1)
-       && !DECL_P (rhs1))
-      || !is_gimple_reg_type (TREE_TYPE (rhs1)))
     return false;
 
   return true;
@@ -3140,17 +3135,10 @@ stmt_is_memory_load_assignment (gimple *stmt)
 static bool
 stmt_is_memory_store_assignment (gimple *stmt)
 {
-  /* Check if middle_bb contains of only one store.  */
   if (!stmt
       || !gimple_assign_single_p (stmt)
-      || gimple_has_volatile_ops (stmt)
+      || !gimple_store_p (stmt)
       || !gimple_references_memory_p (stmt))
-    return false;
-
-  tree lhs = gimple_assign_lhs (stmt);
-  if ((!REFERENCE_CLASS_P (lhs)
-       && !DECL_P (lhs))
-      || !is_gimple_reg_type (TREE_TYPE (lhs)))
     return false;
 
   return true;
@@ -3401,7 +3389,8 @@ cond_removal_mispredict_memop (basic_block cond_bb,
   if (!store_stmt)
     return false;
 
-  if (!stmt_is_memory_store_assignment (store_stmt))
+  if (!stmt_is_memory_store_assignment (store_stmt)
+      || gimple_has_volatile_ops (store_stmt))
     return false;
 
   gsi = gsi_start_nondebug_after_labels_bb (middle_bb);
