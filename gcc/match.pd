@@ -8388,6 +8388,60 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
   (cmp (bit_ior:c @0 (convert? (ne @0 integer_zerop))) integer_zerop)
   (cmp @0 { build_zero_cst (TREE_TYPE (@0)); })))
 
+/* PR93150: (A & N) == CST1 & (((A & M) == CST2) | ((A & Q) == CST3))
+
+   We can distribute the bitops operands and simplify them back to:
+
+   ((A & (N | M)) == (CST1|CST2)) | ((A & (N | Q) == (CST1|CST3)))
+
+   And this will get rid of the CST|CST IOR stmts, resulting in
+   one less op in forwprop.  This will also optimize even further if
+   N, M and Q are constants, something that wouldn't happen in the
+   original form.
+
+   We're also adding the DeMorgan variant.  Same observations apply:
+
+   (A & N) != CST1 | (((A & M) != CST2) & ((A & Q) != CST3)) ->
+   ((A & (N | M)) != (CST1|CST2)) & ((A & (N | Q) != (CST1|CST3)))  */
+(for cmp (eq ne)
+     bitop1 (bit_and bit_ior)
+     bitop2 (bit_ior bit_and)
+ (simplify
+  (bitop1
+   (cmp (bit_and @A @N) INTEGER_CST@1)
+   (bitop2
+    (cmp (bit_and @A @M) INTEGER_CST@2)
+    (cmp (bit_and @A @Q) INTEGER_CST@3)))
+   (if (INTEGRAL_TYPE_P (TREE_TYPE (@A))
+	&& INTEGRAL_TYPE_P (TREE_TYPE (@N))
+	&& INTEGRAL_TYPE_P (TREE_TYPE (@M))
+	&& INTEGRAL_TYPE_P (TREE_TYPE (@Q)))
+    (bitop2
+     (cmp (bit_and @A (bit_ior @N @M)) (bit_ior @1 @2))
+     (cmp (bit_and @A (bit_ior @N @Q)) (bit_ior @1 @3))))))
+
+/* PR93150: a subset from the previous pattern:
+
+  ((A & M) == X) & ((A & N) == Y) -> ((A & (M|N)) == (X | Y))
+  DeMorgan variant:
+  ((A & M) != X) | ((A & N) != Y) -> ((A & (M|N)) != (X | Y))
+
+  They are  worth doing even if no CSTs are present - we'll have one
+  less stmt in forwprop, and the transformed pattern will optimize
+  further if CSTs are present.  */
+(for cmp (eq ne)
+     bitop (bit_and bit_ior)
+ (simplify
+  (bitop
+   (cmp (bit_and @A @M) @X)
+   (cmp (bit_and @A @N) @Y))
+   (if (INTEGRAL_TYPE_P (TREE_TYPE (@A))
+	&& INTEGRAL_TYPE_P (TREE_TYPE (@M))
+	&& INTEGRAL_TYPE_P (TREE_TYPE (@N))
+	&& INTEGRAL_TYPE_P (TREE_TYPE (@X))
+	&& INTEGRAL_TYPE_P (TREE_TYPE (@Y)))
+    (cmp (bit_and @A (bit_ior @M @N)) (bit_ior @X @Y)))))
+
 /* When the addresses are not directly of decls compare base and offset.
    This implements some remaining parts of fold_comparison address
    comparisons but still no complete part of it.  Still it is good
