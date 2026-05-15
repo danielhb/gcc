@@ -3128,14 +3128,11 @@ cond_store_replacement (basic_block middle_bb, basic_block join_bb,
 static bool
 stmt_is_memory_load_assignment (gimple *stmt)
 {
-  if (!stmt
-      || !gimple_assign_single_p (stmt)
-      || TREE_CODE (gimple_assign_lhs (stmt)) != SSA_NAME
-      || is_gimple_reg (gimple_assign_rhs1 (stmt))
-      || !gimple_references_memory_p (stmt))
-    return false;
-
-  return true;
+  return stmt
+	 && gimple_assign_single_p (stmt)
+	 && TREE_CODE (gimple_assign_lhs (stmt)) == SSA_NAME
+	 && gimple_references_memory_p (stmt)
+	 && !is_gimple_reg (gimple_assign_rhs1 (stmt));
 }
 
 /* Return TRUE if STMT is a memory store, FALSE otherwise.  */
@@ -3143,13 +3140,10 @@ stmt_is_memory_load_assignment (gimple *stmt)
 static bool
 stmt_is_memory_store_assignment (gimple *stmt)
 {
-  if (!stmt
-      || !gimple_assign_single_p (stmt)
-      || !gimple_store_p (stmt)
-      || !gimple_references_memory_p (stmt))
-    return false;
-
-  return true;
+  return stmt
+	 && gimple_assign_single_p (stmt)
+	 && gimple_store_p (stmt)
+	 && gimple_references_memory_p (stmt);
 }
 
 /* cond_removal_mispredict_memop helper that checks if a
@@ -3176,6 +3170,9 @@ cond_removal_mispredict_validate_memregs (gimple *store_stmt,
 					  hash_set<tree> *nontrap)
 {
   gimple *load_stmt = SSA_NAME_DEF_STMT (memreg);
+
+  if (!load_stmt || !is_gimple_assign (load_stmt))
+    return false;
 
   if (!operand_equal_p (gimple_assign_rhs1 (load_stmt),
 			gimple_assign_lhs (store_stmt)))
@@ -3217,6 +3214,7 @@ cond_removal_mispredict_valid_bitmask (tree bitmask, bool only_single_bit)
     {
       gimple *def_stmt = SSA_NAME_DEF_STMT (bitmask);
       return def_stmt
+	     && is_gimple_assign (def_stmt)
 	     && gimple_assign_rhs_code (def_stmt) == LSHIFT_EXPR
 	     && integer_onep (gimple_assign_rhs1 (def_stmt));
     }
@@ -3259,6 +3257,9 @@ cond_removal_mispredict_check_cond (gcond *cond, tree_code bitop_code,
     return false;
 
   gimple *cond_stmt = SSA_NAME_DEF_STMT (gimple_cond_lhs (cond));
+  if (!cond_stmt || !is_gimple_assign (cond_stmt))
+    return false;
+
   tree_code cond_code = gimple_cond_code (cond);
 
   if (cond_code != EQ_EXPR && cond_code != NE_EXPR)
