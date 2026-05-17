@@ -3128,11 +3128,7 @@ cond_store_replacement (basic_block middle_bb, basic_block join_bb,
 static bool
 stmt_is_memory_load_assignment (gimple *stmt)
 {
-  return stmt
-	 && gimple_assign_single_p (stmt)
-	 && TREE_CODE (gimple_assign_lhs (stmt)) == SSA_NAME
-	 && gimple_references_memory_p (stmt)
-	 && !is_gimple_reg (gimple_assign_rhs1 (stmt));
+  return stmt && gimple_assign_load_p (stmt);
 }
 
 /* Return TRUE if STMT is a memory store, FALSE otherwise.  */
