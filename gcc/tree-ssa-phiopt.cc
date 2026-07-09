@@ -4121,6 +4121,84 @@ hoist_adjacent_loads (basic_block bb0, basic_block bb1,
     }
 }
 
+static bool
+simplify_phi_result_op (gphi *phi, tree arg0, tree arg1, edge e1, edge e2)
+{
+  /* Verify if we have the following structure:
+
+     iftmp1 = PHI <pow2a, pow2b>
+     _ssa1 = _ssa2 % iftmp1;
+     _ssa3 = _ssa1 EQ|NE 0;
+
+     and use a bit_and instead of mod:
+
+     iftmp1 = PHI <(pow2a - 1), (pow2b - 1)>
+     _ssa1 = _ssa2 & iftmp1;
+     _ssa3 = _ssa1 EQ|NE 0;  */
+  if (!integer_pow2p (arg0) || !tree_fits_uhwi_p (arg0)
+      || !integer_pow2p (arg1) || !tree_fits_uhwi_p (arg1))
+    return false;
+
+  /* The phi result must have a single use */
+  tree phires = gimple_phi_result (phi);
+  use_operand_p use_p;
+  gimple *op_stmt;
+
+  if (!single_imm_use (phires, &use_p, &op_stmt)
+      || !op_stmt
+      || !is_gimple_assign (op_stmt))
+    return false;
+
+  switch (gimple_assign_rhs_code (op_stmt))
+  {
+    case TRUNC_MOD_EXPR:
+    case CEIL_MOD_EXPR:
+    case FLOOR_MOD_EXPR:
+    case ROUND_MOD_EXPR:
+      if (gimple_assign_rhs2 (op_stmt) != phires)
+	return false;
+      break;
+
+    default:
+      return false;
+  }
+
+  /* If MOD rhs1 is a known positive value we can
+     always apply the simplification, i.e. we don't
+     need to verify if it's part of a EQ|NE 0 cmp.  */
+  tree op_rhs1 = gimple_assign_rhs1 (op_stmt);
+  if (!tree_expr_nonnegative_p (op_rhs1))
+    {
+      /* The MOD result must also be a single-use with a
+	 zero equality comparison.  */
+      gimple *cmp_stmt;
+      if (!single_imm_use (gimple_assign_lhs (op_stmt), &use_p, &cmp_stmt)
+	  || !cmp_stmt
+	  || !is_gimple_assign (cmp_stmt))
+	return false;
+
+      if (!(gimple_assign_rhs_code (cmp_stmt) == NE_EXPR
+	    || gimple_assign_rhs_code (cmp_stmt) == EQ_EXPR))
+	return false;
+
+      if (!integer_zerop (gimple_assign_rhs2 (cmp_stmt)))
+	return false;
+    }
+
+  /* Decrement PHI args */
+  tree type = TREE_TYPE (phires);
+  tree new_arg0 = build_int_cst (type, tree_to_uhwi (arg0) - 1);
+  tree new_arg1 = build_int_cst (type, tree_to_uhwi (arg1) - 1);
+  SET_PHI_ARG_DEF (phi, e1->dest_idx, new_arg0);
+  SET_PHI_ARG_DEF (phi, e2->dest_idx, new_arg1);
+
+  /* change op_stmt code from MOD to BIT_AND */
+  gimple_assign_set_rhs_code (op_stmt, BIT_AND_EXPR);
+  update_stmt(op_stmt);
+
+  return true;
+}
+
 /* Determine whether we should attempt to hoist adjacent loads out of
    diamond patterns in pass_phiopt.  Always hoist loads if
    -fhoist-adjacent-loads is specified and the target machine has
@@ -4482,6 +4560,8 @@ pass_phiopt::execute (function *)
 	  node.  */
       gcc_assert (arg0 != NULL_TREE && arg1 != NULL_TREE);
 
+      if (simplify_phi_result_op (phi, arg0, arg1, e1, e2))
+	cfgchanged = true;
 
       /* Do the replacement of conditional if it can be done.  */
       if (match_simplify_replacement (bb, bb1, bb2, e1, e2, phi,
