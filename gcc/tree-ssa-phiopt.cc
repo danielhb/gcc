@@ -4169,13 +4169,17 @@ simplify_phi_result_op (gphi *phi, tree arg0, tree arg1, edge e1, edge e2)
 	  op_other = gimple_assign_rhs1 (op_stmt);
 	else
 	  op_other = gimple_assign_rhs2 (op_stmt);
+
+	if (!TYPE_UNSIGNED (TREE_TYPE (op_other)))
+	  return false;
+
 	break;
 
       default:
 	return false;
     }
 
-  /* If 'op_ther' is a known positive value we can
+  /* If 'op_other' is a known positive value we can
      always apply both simplificatios.  Otherwise see if
      the op_result is single_use with a EQ|NE 0 cmp.  */
   if (!tree_expr_nonnegative_p (op_other))

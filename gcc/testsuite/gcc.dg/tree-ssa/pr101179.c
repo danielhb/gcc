@@ -49,5 +49,5 @@ uint g4 (uint y, _Bool x)
 
 /* { dg-final { scan-tree-dump-times " \& " 3 "phiopt1" } } */
 /* { dg-final { scan-tree-dump-times " \% " 1 "phiopt1" } } */
-/* { dg-final { scan-tree-dump-times " << " 3 "phiopt1" } } */
-/* { dg-final { scan-tree-dump-times " \\* " 1 "phiopt1" } } */
+/* { dg-final { scan-tree-dump-times " << " 2 "phiopt1" } } */
+/* { dg-final { scan-tree-dump-times " \\* " 2 "phiopt1" } } */
