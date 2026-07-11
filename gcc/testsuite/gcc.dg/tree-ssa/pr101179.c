@@ -25,5 +25,29 @@ uint f4 (uint y, _Bool x)
   return y % (x ? 16 : 4);
 }
 
+int g1 (int y, _Bool x)
+{
+  return y * (x ? 16 : 4) == 0;
+}
+
+/* We can't turn this into lshift because there's no
+   guarantee 'y' is a positive val.  */
+int g2 (int y, _Bool x)
+{
+  return y * (x ? 16 : 4);
+}
+
+uint g3 (uint y, _Bool x)
+{
+  return y * (x ? 16 : 4) == 0;
+}
+
+uint g4 (uint y, _Bool x)
+{
+  return y * (x ? 16 : 4);
+}
+
 /* { dg-final { scan-tree-dump-times " \& " 3 "phiopt1" } } */
 /* { dg-final { scan-tree-dump-times " \% " 1 "phiopt1" } } */
+/* { dg-final { scan-tree-dump-times " << " 3 "phiopt1" } } */
+/* { dg-final { scan-tree-dump-times " \\* " 1 "phiopt1" } } */

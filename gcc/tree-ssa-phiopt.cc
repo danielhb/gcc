@@ -4149,29 +4149,39 @@ simplify_phi_result_op (gphi *phi, tree arg0, tree arg1, edge e1, edge e2)
       || !is_gimple_assign (op_stmt))
     return false;
 
-  switch (gimple_assign_rhs_code (op_stmt))
-  {
-    case TRUNC_MOD_EXPR:
-    case CEIL_MOD_EXPR:
-    case FLOOR_MOD_EXPR:
-    case ROUND_MOD_EXPR:
-      if (gimple_assign_rhs2 (op_stmt) != phires)
-	return false;
-      break;
-
-    default:
-      return false;
-  }
-
-  /* If MOD rhs1 is a known positive value we can
-     always apply the simplification, i.e. we don't
-     need to verify if it's part of a EQ|NE 0 cmp.  */
-  tree op_rhs1 = gimple_assign_rhs1 (op_stmt);
-  if (!tree_expr_nonnegative_p (op_rhs1))
+  tree_code op_code = gimple_assign_rhs_code (op_stmt);
+  tree op_other;
+  switch (op_code)
     {
-      /* The MOD result must also be a single-use with a
-	 zero equality comparison.  */
+      case TRUNC_MOD_EXPR:
+      case CEIL_MOD_EXPR:
+      case FLOOR_MOD_EXPR:
+      case ROUND_MOD_EXPR:
+	/* phires needs to be the divisor.  */
+	if (gimple_assign_rhs2 (op_stmt) != phires)
+	  return false;
+
+	op_other = gimple_assign_rhs1 (op_stmt);
+	break;
+
+      case MULT_EXPR:
+	if (gimple_assign_rhs2 (op_stmt) == phires)
+	  op_other = gimple_assign_rhs1 (op_stmt);
+	else
+	  op_other = gimple_assign_rhs2 (op_stmt);
+	break;
+
+      default:
+	return false;
+    }
+
+  /* If 'op_ther' is a known positive value we can
+     always apply both simplificatios.  Otherwise see if
+     the op_result is single_use with a EQ|NE 0 cmp.  */
+  if (!tree_expr_nonnegative_p (op_other))
+    {
       gimple *cmp_stmt;
+
       if (!single_imm_use (gimple_assign_lhs (op_stmt), &use_p, &cmp_stmt)
 	  || !cmp_stmt
 	  || !is_gimple_assign (cmp_stmt))
@@ -4187,13 +4197,28 @@ simplify_phi_result_op (gphi *phi, tree arg0, tree arg1, edge e1, edge e2)
 
   /* Decrement PHI args */
   tree type = TREE_TYPE (phires);
-  tree new_arg0 = build_int_cst (type, tree_to_uhwi (arg0) - 1);
-  tree new_arg1 = build_int_cst (type, tree_to_uhwi (arg1) - 1);
+  tree new_arg0, new_arg1;
+  tree_code new_op_code;
+
+  if (op_code == MULT_EXPR)
+    {
+      new_arg0 = build_int_cst (type, wi::exact_log2 (tree_to_uhwi (arg0)));
+      new_arg1 = build_int_cst (type, wi::exact_log2 (tree_to_uhwi (arg1)));
+      new_op_code = LSHIFT_EXPR;
+    }
+  else
+    {
+      new_arg0 = build_int_cst (type, tree_to_uhwi (arg0) - 1);
+      new_arg1 = build_int_cst (type, tree_to_uhwi (arg1) - 1);
+      new_op_code = BIT_AND_EXPR;
+    }
+
   SET_PHI_ARG_DEF (phi, e1->dest_idx, new_arg0);
   SET_PHI_ARG_DEF (phi, e2->dest_idx, new_arg1);
 
-  /* change op_stmt code from MOD to BIT_AND */
-  gimple_assign_set_rhs_code (op_stmt, BIT_AND_EXPR);
+  gimple_assign_set_rhs1 (op_stmt, op_other);
+  gimple_assign_set_rhs2 (op_stmt, phires);
+  gimple_assign_set_rhs_code (op_stmt, new_op_code);
   update_stmt(op_stmt);
 
   return true;
