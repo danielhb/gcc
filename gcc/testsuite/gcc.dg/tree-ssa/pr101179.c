@@ -50,7 +50,31 @@ uint g4 (uint y, _Bool x)
   return y / (x ? 16 : 4);
 }
 
+/* We can't turn m1 and m2 this into a lshift because
+   there's no guarantee 'y' is a positive val.  */
+int m1 (int y, _Bool x)
+{
+  return y * (x ? 16 : 4) == 0;
+}
+
+int m2 (int y, _Bool x)
+{
+  return y * (x ? 16 : 4);
+}
+
+uint m3 (uint y, _Bool x)
+{
+  return y * (x ? 16 : 4) == 0;
+}
+
+uint m4 (uint y, _Bool x)
+{
+  return y * (x ? 16 : 4);
+}
+
 /* { dg-final { scan-tree-dump-times " \& " 3 "phiopt1" } } */
 /* { dg-final { scan-tree-dump-times " \% " 1 "phiopt1" } } */
 /* { dg-final { scan-tree-dump-times " >> " 1 "phiopt1" } } */
 /* { dg-final { scan-tree-dump-times " \\/ " 2 "phiopt1" } } */
+/* { dg-final { scan-tree-dump-times " << " 2 "phiopt1" } } */
+/* { dg-final { scan-tree-dump-times " \\* " 2 "phiopt1" } } */

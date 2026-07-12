@@ -4151,12 +4151,19 @@ simplify_phi_result_op (gphi *phi, tree arg0, tree arg1, edge e1, edge e2)
 
   tree_code op_code = gimple_assign_rhs_code (op_stmt);
   tree_code new_op_code;
+  tree op_other;
+
   switch (op_code)
     {
       case TRUNC_MOD_EXPR:
       case CEIL_MOD_EXPR:
       case FLOOR_MOD_EXPR:
       case ROUND_MOD_EXPR:
+	/* phires needs to be the divisor.  */
+	if (gimple_assign_rhs2 (op_stmt) != phires)
+	  return false;
+
+	op_other = gimple_assign_rhs1 (op_stmt);
 	new_op_code = BIT_AND_EXPR;
 	break;
 
@@ -4164,20 +4171,26 @@ simplify_phi_result_op (gphi *phi, tree arg0, tree arg1, edge e1, edge e2)
       case CEIL_DIV_EXPR:
       case FLOOR_DIV_EXPR:
       case ROUND_DIV_EXPR:
+	/* phires needs to be the divisor.  */
+	if (gimple_assign_rhs2 (op_stmt) != phires)
+	  return false;
+
+	op_other = gimple_assign_rhs1 (op_stmt);
 	new_op_code = RSHIFT_EXPR;
+	break;
+
+     case MULT_EXPR:
+	if (gimple_assign_rhs2 (op_stmt) == phires)
+	  op_other = gimple_assign_rhs1 (op_stmt);
+	else
+	  op_other = gimple_assign_rhs2 (op_stmt);
+
+	new_op_code = LSHIFT_EXPR;
 	break;
 
       default:
 	return false;
     }
-
-  tree op_other;
-
-  /* phires needs to be the divisor.  */
-  if (gimple_assign_rhs2 (op_stmt) != phires)
-    return false;
-
-  op_other = gimple_assign_rhs1 (op_stmt);
 
   /* If 'op_other' is a known positive value we can
      always apply the MOD simplificatios.  Otherwise see if
@@ -4186,8 +4199,9 @@ simplify_phi_result_op (gphi *phi, tree arg0, tree arg1, edge e1, edge e2)
     {
       gimple *cmp_stmt;
 
-      /* Don't bother with negative values and DIV.  */
-      if (new_op_code == RSHIFT_EXPR)
+      /* Don't bother with negative values and DIV/MULT.  */
+      if (new_op_code == RSHIFT_EXPR
+	  || new_op_code == LSHIFT_EXPR)
 	return false;
 
       if (!single_imm_use (gimple_assign_lhs (op_stmt), &use_p, &cmp_stmt)
@@ -4207,7 +4221,8 @@ simplify_phi_result_op (gphi *phi, tree arg0, tree arg1, edge e1, edge e2)
   tree type = TREE_TYPE (phires);
   tree new_arg0, new_arg1;
 
-  if (new_op_code == RSHIFT_EXPR)
+  if (new_op_code == RSHIFT_EXPR
+      || new_op_code == LSHIFT_EXPR)
     {
       new_arg0 = build_int_cst (type, wi::exact_log2 (tree_to_uhwi (arg0)));
       new_arg1 = build_int_cst (type, wi::exact_log2 (tree_to_uhwi (arg1)));
