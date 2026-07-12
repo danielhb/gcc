@@ -4220,6 +4220,8 @@ simplify_phi_result_op (gphi *phi, tree arg0, tree arg1, edge e1, edge e2)
 
   SET_PHI_ARG_DEF (phi, e1->dest_idx, new_arg0);
   SET_PHI_ARG_DEF (phi, e2->dest_idx, new_arg1);
+  if (SSA_NAME_RANGE_INFO (phires))
+    reset_flow_sensitive_info (phires);
 
   gimple_assign_set_rhs1 (op_stmt, op_other);
   gimple_assign_set_rhs2 (op_stmt, phires);
