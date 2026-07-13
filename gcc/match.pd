@@ -6102,76 +6102,66 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
   (if (wi::to_wide (@2) == ~wi::to_wide (@1))
    @3))
 
-/* PR124667: (A & (1 << val)) == 0 ? A |= (1 << val) : A
-   Similar to PR64567 above but with the bit given
+/* PR124667: Similar to PR64567 above but with the bit given
    by an (1 << val) lshift.  Note that this shift pattern
-   guarantees that this is a single bit operation.  */
-(simplify
- (cond
-  (eq (bit_and:c @0 (lshift@1 integer_onep @2)) integer_zerop)
-      (bit_ior:c@3 @0 @1)
-      @0)
- @3)
+   guarantees that this is a single bit operation.
 
-/* PR124667: (A & (1 << val)) != 0 ? A : A |= (1 << val)
-   NE variant of the previous match.  */
-(simplify
- (cond
-  (ne (bit_and:c @0 (lshift@1 integer_onep @2)) integer_zerop)
-      @0
-      (bit_ior:c@3 @0 @1))
-  @3)
+   The same pattern, if using '!=' instead of '==', will
+   result in just 'A'.
 
-/* PR124667: same patterns as above but with true/false legs
-   switched, reducing all to just "A":
-   (A & (1 << val)) == 0 ? A : (A | (1 << val))
-   (A & (1 << val)) != 0 ? (A | (1 << val)) : A;  */
-(simplify
- (cond
-  (eq (bit_and:c @0 (lshift@1 integer_onep @2)) integer_zerop)
-      @0
-      (bit_ior:c @0 @1))
-  @0)
-(simplify
- (cond
-  (ne (bit_and:c @0 (lshift@1 integer_onep @2)) integer_zerop)
-      (bit_ior:c @0 @1)
-      @0)
-  @0)
+   (A & (1 << val)) == 0 ? A |= (1 << val) : A => A |= (1 << val)
+   (A & (1 << val)) != 0 ? A |= (1 << val) : A => A;  */
+(for neeq  (eq ne)
+ (simplify
+  (cond
+   (neeq (bit_and:c @A (lshift@1 integer_onep @2)) integer_zerop)
+	 (bit_ior:c@3 @A @1)
+	 @A)
+    (if (neeq == EQ_EXPR)
+     @3
+     @A))
+
+/* PR124667: NE variant of the previous match with switched true/false
+   legs:
+
+   (A & (1 << val)) != 0 ? A : A |= (1 << val) => A |= (1 << val)
+   (A & (1 << val)) == 0 ? A : A |= (1 << val) => A;  */
+ (simplify
+  (cond
+   (neeq (bit_and:c @A (lshift@1 integer_onep @2)) integer_zerop)
+	 @A
+	 (bit_ior:c@3 @A @1))
+    (if (neeq == NE_EXPR)
+     @3
+     @A))
 
 /* PR124667: a bitmask set simplification that is possible as
-   long as the whole bitmask is being checked:
-   (A & B) == B ?   A    : A |= B  => A | B
-   (A & B) != B ? A |= B :   A     => A | B.  */
-(simplify
- (cond
-  (eq:c (bit_and @0 @1) @1)
-	@0
-	(bit_ior@2 @0 @1))
-  @2)
-(simplify
- (cond
-  (ne:c (bit_and @0 @1) @1)
-	(bit_ior@2 @0 @1)
-	@0)
-  @2)
+   long as the whole bitmask is being checked.  Switching the
+   comparison from '==' to '!=' results in 'A':
 
-/* PR124667: similar from above with true/false legs switched,
-   reducing to just A:
-   (A & B) == B ? (A | B) : A
-   (A & B) != B ? A : (A | B);  */
+   (A & B) == B ? A : A |= B  => A |= B
+   (A & B) != B ? A : A |= B  => A;  */
+ (simplify
+  (cond
+   (neeq:c (bit_and @0 @1) @1)
+	   @0
+	   (bit_ior@2 @0 @1))
+    (if (neeq == EQ_EXPR)
+     @2
+     @0))
+
+/* PR124667: similar from above with true/false legs switched:
+
+   (A & B) != B ? A |= B : A => A | B.
+   (A & B) == B ? A |= B : A => A;  */
 (simplify
  (cond
-  (eq:c (bit_and @0 @1) @1)
-	(bit_ior @0 @1)
-	@0)
-  @0)
-(simplify
- (cond
-  (ne:c (bit_and @0 @1) @1)
-	@0
-	(bit_ior @0 @1))
-  @0)
+  (neeq:c (bit_and @0 @1) @1)
+	  (bit_ior@2 @0 @1)
+	  @0)
+   (if (neeq == NE_EXPR)
+    @2
+    @0)))
 
 /* PR124667: these also reduces to just "A":
    ((A >> val) & 1) == 0 ?  A : (A | (1 << val))
