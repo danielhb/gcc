@@ -3906,6 +3906,148 @@ cond_if_else_store_replacement (basic_block then_bb, basic_block else_bb,
   return ok;
 }
 
+static bool
+simplify_phi_constants (basic_block cond_bb, gphi *phi,
+			tree arg0, tree arg1,
+			edge e0, edge e1)
+{
+  if (TREE_CODE (arg0) != INTEGER_CST
+      || TREE_CODE (arg1) != INTEGER_CST
+      || tree_int_cst_sgn (arg0) <= 0
+      || tree_int_cst_sgn (arg1) <= 0
+      || !tree_fits_uhwi_p (arg0)
+      || !tree_fits_uhwi_p (arg1))
+    return false;
+
+  tree phires = gimple_phi_result (phi);
+
+  if (virtual_operand_p (phires)
+      || !INTEGRAL_TYPE_P (TREE_TYPE (phires))
+      || gimple_phi_num_args (phi) != 2)
+    return false;
+
+  /* Check if phi_res is single use and not used in any
+     binary operation.  We make this check to avoid getting
+     in the way of simplifications such as PR 122608 that
+     are better.  */
+  use_operand_p use;
+  gimple *use_stmt;
+  if (!single_imm_use (phires, &use, &use_stmt)
+      || (!is_a<gassign*> (use_stmt)
+	  && !is_a<gcall*> (use_stmt)
+	  && !is_a<greturn*> (use_stmt)))
+    return false;
+
+  if (is_a<gassign*> (use_stmt)
+      && get_gimple_rhs_class (
+		gimple_assign_rhs_code (use_stmt)) == GIMPLE_BINARY_RHS)
+    return false;
+
+  gcond *cond = as_a <gcond *> (*gsi_last_bb (cond_bb));
+  tree_code cond_code = gimple_cond_code (cond);
+  tree zero_one = gimple_cond_lhs (cond);
+  if (!tree_zero_one_valued_p (zero_one)
+      || !INTEGRAL_TYPE_P (TREE_TYPE (zero_one))
+      || !integer_zerop (gimple_cond_rhs (cond))
+      || (cond_code != NE_EXPR && cond_code != EQ_EXPR))
+    return false;
+
+  /* At this point we're committed.  What we want now is:
+     - if we have an EQ_EXPR canonicalize it to NE_EXPR to
+       simplify the logic;
+     - add a phires-type cast for gcond LHS;
+     - add a mult stmt with the cond_lhs casted result;
+     - add the cst expression stmt to be used as the new
+     tree for the PHI.  */
+
+  if (cond_code == EQ_EXPR)
+    {
+      gimple_cond_set_code (cond, NE_EXPR);
+      std::swap (arg0, arg1);
+    }
+
+  unsigned HOST_WIDE_INT diff = 0;
+  unsigned HOST_WIDE_INT arg0_val = tree_to_uhwi (arg0);
+  unsigned HOST_WIDE_INT arg1_val = tree_to_uhwi (arg1);
+  bool arg0_gt = false;
+
+  if (arg0_val > arg1_val)
+    {
+      diff = arg0_val - arg1_val;
+      arg0_gt = true;
+    }
+  else
+    diff = arg1_val - arg0_val;
+
+  bool e0_true_edge = false;
+  if (e0->flags & EDGE_TRUE_VALUE)
+    e0_true_edge = true;
+
+  tree cst_stmt_operand;
+  tree_code cst_stmt_code;
+
+  /* zero_one NE 0 ? CST_GT : CST_LT will be reduced to
+     CST_LT + zero_one*diff; */
+  if ((e0_true_edge && arg0_gt)
+       || (!e0_true_edge && !arg0_gt))
+    {
+      cst_stmt_code = PLUS_EXPR;
+      cst_stmt_operand = arg0_gt ? arg1 : arg0;
+    }
+  /* zero_one NE 0 ? CST_LT : CST_GT will be reduced to
+     CST_GT - zero_one*diff; */
+  else if ((e0_true_edge && !arg0_gt)
+	    || (!e0_true_edge && arg0_gt))
+    {
+      cst_stmt_code = MINUS_EXPR;
+      cst_stmt_operand = arg0_gt ? arg0 : arg1;
+    }
+  else
+    gcc_unreachable ();
+
+  tree elems_type = TREE_TYPE (cst_stmt_operand);
+  tree new_phires = make_ssa_name (elems_type, NULL);
+  gphi *new_phi = create_phi_node (new_phires, phi->bb);
+  
+  /* For zero_one NE 0 ? CST1 : CST2, zero_one == 1
+     in the 'true' edge.  */
+  tree e0_arg, e1_arg;
+  if (e0_true_edge)
+    {
+      e0_arg = build_int_cst (elems_type, 1);
+      e1_arg = build_int_cst (elems_type, 0);
+    }
+  else
+    {
+      e0_arg = build_int_cst (elems_type, 0);
+      e1_arg = build_int_cst (elems_type, 1);
+    }
+
+  SET_PHI_ARG_DEF (new_phi, e0->dest_idx, e0_arg);
+  SET_PHI_ARG_DEF (new_phi, e1->dest_idx, e1_arg);
+
+  gimple_stmt_iterator gsi = gsi_start_bb (phi->bb);
+
+  /* new_phires * diff stmt.  */
+  tree mult_lhs = make_ssa_name (elems_type);
+  gimple *mult_diff = gimple_build_assign (mult_lhs, MULT_EXPR,
+	new_phires, build_int_cst(elems_type, diff));
+  gsi_insert_before (&gsi, mult_diff, GSI_SAME_STMT);
+
+  /* CST + (cast_lhs * diff) stmt.  */
+  tree cst_lhs = make_ssa_name (elems_type);
+  gimple *cst_stmt = gimple_build_assign (cst_lhs, cst_stmt_code,
+	cst_stmt_operand, mult_lhs);
+  gsi_insert_before (&gsi, cst_stmt, GSI_SAME_STMT);
+
+  replace_uses_by (phires, cst_lhs);
+
+  gsi = gsi_for_phi (phi);
+  gsi_remove (&gsi, true);
+
+  return true;
+}
+
 /* If PHI at MERGE is a "load PHI", PHI <*P, *Q> whose two arguments are
    single-use, non-volatile scalar MEM_REF loads reading the same memory state
    (same VUSE), factor the load out: introduce P' = PHI <P, Q> and a single
@@ -4755,6 +4897,12 @@ pass_phiopt::execute (function *)
       else if (single_pred_p (bb1)
 	       && !diamond_p
 	       && spaceship_replacement (bb, bb1, e1, e2, phi, arg0, arg1))
+	cfgchanged = true;
+      else if (!early_p
+	       && !diamond_p
+	       && single_pred_p (bb1)
+	       && empty_block_p (bb1)
+	       && simplify_phi_constants (bb, phi, arg0, arg1, e1, e2))
 	cfgchanged = true;
     };
 
