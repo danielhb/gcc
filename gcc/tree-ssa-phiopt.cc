@@ -3977,7 +3977,6 @@ simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
   tree lshift_lhs = make_ssa_name (elems_type);
   gimple *shift_diff = gimple_build_assign (lshift_lhs, LSHIFT_EXPR,
 	phires, wide_int_to_tree(elems_type, log2_diff));
-  SSA_NAME_DEF_STMT (lshift_lhs) = shift_diff;
 
   gsi = gsi_start_bb (phi->bb);
   gsi_insert_before (&gsi, shift_diff, GSI_SAME_STMT);
@@ -4021,7 +4020,6 @@ simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
   tree cst_lhs = make_ssa_name (elems_type);
   gimple *cst_stmt = gimple_build_assign (cst_lhs, cst_stmt_code,
 	cst_stmt_operand, lshift_lhs);
-  SSA_NAME_DEF_STMT (cst_lhs) = cst_stmt;
 
   gsi = gsi_for_stmt (shift_diff);
   gsi_insert_after (&gsi, cst_stmt, GSI_LAST_NEW_STMT);
