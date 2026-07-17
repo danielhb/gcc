@@ -3906,6 +3906,200 @@ cond_if_else_store_replacement (basic_block then_bb, basic_block else_bb,
   return ok;
 }
 
+/* Given a PHI with 2 edges, both with CST args and an
+   empty middle_bb, with a zero_one NE zero comparison:
+
+   <bb 2>
+   if (zero_one != 0) goto <bb 4> else goto <bb 3>
+   <bb 3>
+   goto <bb 4>
+   <bb 4>
+   c_12 = PHI <3(3), 17(2)>
+
+   Canonizalize it into a PHI <0,1> that recreates the CSTs
+   with a MULT:
+
+   <bb 2>
+   if (zero_one != 0) goto <bb 4> else goto <bb 3>
+   <bb 3>
+   goto <bb 4>
+   <bb 4>
+   c_12 = PHI <0(3), 1(2)>
+   _ssa1 = c_12 * (17 - 3)
+   _ssa2 = 3 + _ssa1
+   (replace c_12 with _ssa2)
+
+   This allows the following phiopt pass (via match_simplify_replacement)
+   to eliminate the gcond and the middle_bb, resulting in better code
+   generation.
+
+   EQ comparisons are also supported and will canonicalized to NE.
+
+   The canonicalization is restricted to zero_one comparisons because
+   match.pd has forwprop transformations such as:
+
+   (m1 cmp m2) * d => (m1 cmp m2) ? d : 0
+
+   That would end up undoing the canonicalization done here.  */
+static bool
+canonicalize_phi_constants (basic_block cond_bb, gphi *phi,
+			    tree arg0, tree arg1,
+			    edge e0, edge e1)
+{
+  if (gimple_phi_num_args (phi) != 2
+      || TREE_CODE (arg0) != INTEGER_CST
+      || TREE_CODE (arg1) != INTEGER_CST
+      || tree_int_cst_sgn (arg0) <= 0
+      || tree_int_cst_sgn (arg1) <= 0
+      || !tree_fits_uhwi_p (arg0)
+      || !tree_fits_uhwi_p (arg1))
+    return false;
+
+  tree phires = gimple_phi_result (phi);
+
+  /* ??? Do we need to check both virtual_operand_p and !INTEGRAL_TYPE_P?  */
+  if (virtual_operand_p (phires)
+      || !INTEGRAL_TYPE_P (TREE_TYPE (phires)))
+    return false;
+
+  /* Check if phi_res is single use and not used in any
+     binary operation.  We make this check to avoid getting
+     in the way of simplifications such as PR 122608 that
+     are better.  */
+  use_operand_p use;
+  gimple *use_stmt;
+  if (!single_imm_use (phires, &use, &use_stmt)
+      || (!is_a<gassign*> (use_stmt)
+	  && !is_a<gcall*> (use_stmt)
+	  && !is_a<greturn*> (use_stmt))
+      || (is_a<gassign*> (use_stmt)
+	  && get_gimple_rhs_class (
+		gimple_assign_rhs_code (use_stmt)) == GIMPLE_BINARY_RHS))
+    return false;
+
+  gcond *cond = as_a <gcond *> (*gsi_last_bb (cond_bb));
+  tree_code cond_code = gimple_cond_code (cond);
+  tree zero_one = gimple_cond_lhs (cond);
+  if (!tree_zero_one_valued_p (zero_one)
+      || !INTEGRAL_TYPE_P (TREE_TYPE (zero_one))
+      || !integer_zerop (gimple_cond_rhs (cond))
+      || (cond_code != NE_EXPR && cond_code != EQ_EXPR))
+    return false;
+
+  /* At this point we're committed.  What we want now is:
+     - if we have an EQ_EXPR canonicalize it to NE_EXPR to
+       simplify the logic;
+     - add a "new_phires = PHI <0, 1>;" gphi;
+     - add a "new_phires * (CST_GT - CST_LT)" stmt;
+     - add a "CST PLUS|MINUS (new_phires*diff)" stmt;
+     - replace phires with new_phires and remove the old PHI.  */
+
+  bool cond_canonicalized = false;
+  if (cond_code == EQ_EXPR)
+    {
+      gimple_cond_set_code (cond, NE_EXPR);
+      std::swap (arg0, arg1);
+      cond_canonicalized = true;
+    }
+
+  unsigned HOST_WIDE_INT diff = 0;
+  unsigned HOST_WIDE_INT arg0_val = tree_to_uhwi (arg0);
+  unsigned HOST_WIDE_INT arg1_val = tree_to_uhwi (arg1);
+  bool arg0_gt = false;
+
+  if (arg0_val > arg1_val)
+    {
+      diff = arg0_val - arg1_val;
+      arg0_gt = true;
+    }
+  else
+    diff = arg1_val - arg0_val;
+
+  bool e0_true_edge = false;
+  if (e0->flags & EDGE_TRUE_VALUE)
+    e0_true_edge = true;
+
+  tree cst_stmt_operand;
+  tree_code cst_stmt_code;
+
+  /* zero_one NE 0 ? CST_GT : CST_LT will be reduced to
+     CST_LT + zero_one*diff; */
+  if ((e0_true_edge && arg0_gt)
+       || (!e0_true_edge && !arg0_gt))
+    {
+      cst_stmt_code = PLUS_EXPR;
+      cst_stmt_operand = arg0_gt ? arg1 : arg0;
+    }
+  /* zero_one NE 0 ? CST_LT : CST_GT will be reduced to
+     CST_GT - zero_one*diff; */
+  else if ((e0_true_edge && !arg0_gt)
+	    || (!e0_true_edge && arg0_gt))
+    {
+      cst_stmt_code = MINUS_EXPR;
+      cst_stmt_operand = arg0_gt ? arg0 : arg1;
+    }
+  else
+    gcc_unreachable ();
+
+  tree elems_type = TREE_TYPE (cst_stmt_operand);
+  tree new_phires = make_ssa_name (elems_type, NULL);
+  gphi *new_phi = create_phi_node (new_phires, phi->bb);
+
+  /* For zero_one NE 0 ? CST1 : CST2, zero_one == 1
+     in the 'true' edge.  */
+  tree e0_arg, e1_arg;
+  if (e0_true_edge)
+    {
+      e0_arg = build_int_cst (elems_type, 1);
+      e1_arg = build_int_cst (elems_type, 0);
+    }
+  else
+    {
+      e0_arg = build_int_cst (elems_type, 0);
+      e1_arg = build_int_cst (elems_type, 1);
+    }
+
+  SET_PHI_ARG_DEF (new_phi, e0->dest_idx, e0_arg);
+  SET_PHI_ARG_DEF (new_phi, e1->dest_idx, e1_arg);
+
+  gimple_seq seq = nullptr;
+
+  /* new_phires * diff stmt.  */
+  tree mult_lhs = gimple_build (&seq, MULT_EXPR, elems_type,
+	new_phires, build_int_cst (elems_type, diff));
+  /* CST PLUS|MINUS (new_phires*diff) stmt.  */
+  tree cst_lhs = gimple_build (&seq, cst_stmt_code, elems_type,
+	cst_stmt_operand, mult_lhs);
+
+  /* In theory we could do replace_phi_edge_with_variable here and
+     be done with it but bootstrap really dislikes that.  In the
+     next phiopt pass match_simplify_replacement will replace the
+     phi and make a better job at it, so for now we're happy
+     with just adjusting the new PHI and the extra stmts.  */
+  gimple_stmt_iterator gsi = gsi_start_bb (phi->bb);
+  gsi_insert_seq_before (&gsi, seq, GSI_CONTINUE_LINKING);
+
+  replace_uses_by (phires, cst_lhs);
+
+  gsi = gsi_for_phi (phi);
+  gsi_remove (&gsi, true);
+
+  statistics_counter_event (cfun, "Canonicalized PHI constant args", 1);
+  if (dump_file && (dump_flags & TDF_DETAILS))
+    {
+      if (cond_canonicalized)
+	fprintf (dump_file,
+		 "COND_EXPR in block %d canonicalized to NE_EXPR. ",
+		 cond_bb->index);
+
+      fprintf (dump_file,
+	       "Constant PHI args in block %d canonicalized to 0/1.\n",
+	       new_phi->bb->index);
+    }
+
+  return true;
+}
+
 /* If PHI at MERGE is a "load PHI", PHI <*P, *Q> whose two arguments are
    single-use, non-volatile scalar MEM_REF loads reading the same memory state
    (same VUSE), factor the load out: introduce P' = PHI <P, Q> and a single
@@ -4755,6 +4949,12 @@ pass_phiopt::execute (function *)
       else if (single_pred_p (bb1)
 	       && !diamond_p
 	       && spaceship_replacement (bb, bb1, e1, e2, phi, arg0, arg1))
+	cfgchanged = true;
+      else if (!early_p
+	       && !diamond_p
+	       && single_pred_p (bb1)
+	       && empty_block_p (bb1)
+	       && canonicalize_phi_constants (bb, phi, arg0, arg1, e1, e2))
 	cfgchanged = true;
     };
 
