@@ -3676,8 +3676,12 @@ simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
   FOR_EACH_IMM_USE_FAST (use_p, iter, phires)
     {
       gimple *use_stmt = USE_STMT (use_p);
-      enum tree_code code = gimple_assign_rhs_code (use_stmt);
+      enum tree_code code;
 
+      if (!is_gimple_assign (use_stmt))
+	continue;
+
+      code = gimple_assign_rhs_code (use_stmt);
       if (get_gimple_rhs_class (code) == GIMPLE_BINARY_RHS)
 	return false;
     }
