@@ -3720,6 +3720,8 @@ simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
       SET_PHI_ARG_DEF (phi, e1->dest_idx, one_arg);
       SET_PHI_ARG_DEF (phi, e0->dest_idx, zero_arg);
     }
+  if (SSA_NAME_RANGE_INFO (phires))
+    reset_flow_sensitive_info (phires);
 
   /* Create phires << log2(diff) stmt.  */
   gimple_stmt_iterator gsi;
@@ -3785,9 +3787,6 @@ simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
 
       update_stmt (stmt);
     }
-
-  if (SSA_NAME_RANGE_INFO (phires))
-    reset_flow_sensitive_info (phires);
 
   return true;
 }
