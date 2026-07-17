@@ -3655,6 +3655,145 @@ cond_if_else_store_replacement (basic_block then_bb, basic_block else_bb,
   return ok;
 }
 
+static bool
+simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
+			edge e0, edge e1)
+{
+  if (TREE_CODE (TREE_TYPE (arg0)) != INTEGER_TYPE
+      || TREE_CODE (TREE_TYPE (arg1)) != INTEGER_TYPE
+      || tree_int_cst_sgn (arg0) <= 0
+      || tree_int_cst_sgn (arg1) <= 0
+      || !tree_fits_uhwi_p (arg0)
+      || !tree_fits_uhwi_p (arg1))
+    return false;
+
+  /* Check if phi_res is not used in any binary operation.
+     We make this check to avoid getting in the way of
+     simplifications such as PR 122608 that are better.  */
+  tree phires = gimple_phi_result (phi);
+  use_operand_p use_p;
+  imm_use_iterator iter;
+  FOR_EACH_IMM_USE_FAST (use_p, iter, phires)
+    {
+      gimple *use_stmt = USE_STMT (use_p);
+      enum tree_code code = gimple_assign_rhs_code (use_stmt);
+
+      if (get_gimple_rhs_class (code) == GIMPLE_BINARY_RHS)
+	return false;
+    }
+
+  unsigned HOST_WIDE_INT diff = 0;
+  unsigned HOST_WIDE_INT arg0_val = tree_to_uhwi (arg0);
+  unsigned HOST_WIDE_INT arg1_val = tree_to_uhwi (arg1);
+  int log2_diff = 0;
+  bool arg0_gt = false;
+
+  if (arg0_val > arg1_val)
+    {
+      diff = arg0_val - arg1_val;
+      arg0_gt = true;
+    }
+  else
+    diff = arg1_val - arg0_val;
+
+  log2_diff = exact_log2 (diff);
+  if (log2_diff == -1)
+    return false;
+
+  bool e0_true_edge = false;
+  if (e0->flags & EDGE_TRUE_VALUE)
+    e0_true_edge = true;
+
+  /* At this point we're committed.  Insert a zero PHI arg
+     for the false edge, 1 for the true edge.  */
+  tree elems_type = TREE_TYPE (phires);
+  tree zero_arg = build_int_cst (elems_type, 0);
+  tree one_arg = build_int_cst (elems_type, 1);
+
+  if (e0_true_edge)
+    {
+      SET_PHI_ARG_DEF (phi, e0->dest_idx, one_arg);
+      SET_PHI_ARG_DEF (phi, e1->dest_idx, zero_arg);
+    }
+  else
+    {
+      SET_PHI_ARG_DEF (phi, e1->dest_idx, one_arg);
+      SET_PHI_ARG_DEF (phi, e0->dest_idx, zero_arg);
+    }
+
+  /* Create phires << log2(diff) stmt.  */
+  gimple_stmt_iterator gsi;
+  tree lshift_lhs = make_ssa_name (elems_type);
+  gimple *shift_diff = gimple_build_assign (lshift_lhs, LSHIFT_EXPR,
+	phires, wide_int_to_tree(elems_type, log2_diff));
+  SSA_NAME_DEF_STMT (lshift_lhs) = shift_diff;
+
+  gsi = gsi_start_bb (phi->bb);
+  gsi_insert_before (&gsi, shift_diff, GSI_SAME_STMT);
+
+  /* Given CST_GT > CST_LT and changing the PHI args to 0 for
+     the false edge and 1 to the true edge:
+
+     - CST_GT coming from the true edge:
+     CST_LT + zero_one << log2(diff)
+
+     - CST_GT coming from the false edge:
+     CST_GT - zero_one << log2(diff).  */
+  tree_code cst_stmt_code;
+  tree cst_stmt_operand;
+
+  if (arg0_gt && e0_true_edge)
+    {
+      /* arg1 + zero_one << log2(diff)  */
+      cst_stmt_code = PLUS_EXPR;
+      cst_stmt_operand = arg1;
+    }
+  else if (arg0_gt && !e0_true_edge)
+    {
+      /* arg0 - zero_one << log2(diff)  */
+     cst_stmt_code = MINUS_EXPR;
+     cst_stmt_operand = arg0;
+    }
+  else if (!arg0_gt && e0_true_edge)
+    {
+      /*  arg1 - zero_one << log2(diff)  */
+      cst_stmt_code = MINUS_EXPR;
+      cst_stmt_operand = arg1;
+    }
+  else
+    {
+      /* arg0 + zero_one << log2(diff)  */
+      cst_stmt_code = PLUS_EXPR;
+      cst_stmt_operand = arg0;
+    }
+
+  tree cst_lhs = make_ssa_name (elems_type);
+  gimple *cst_stmt = gimple_build_assign (cst_lhs, cst_stmt_code,
+	cst_stmt_operand, lshift_lhs);
+  SSA_NAME_DEF_STMT (cst_lhs) = cst_stmt;
+
+  gsi = gsi_for_stmt (shift_diff);
+  gsi_insert_after (&gsi, cst_stmt, GSI_LAST_NEW_STMT);
+
+  /* Replace all uses of the old phi result with cst_lhs.  */
+  gimple *stmt;
+  FOR_EACH_IMM_USE_STMT (stmt, iter, phires)
+    {
+      if (stmt == shift_diff)
+	continue;
+
+      FOR_EACH_IMM_USE_ON_STMT (use_p, iter)
+	SET_USE (use_p, cst_lhs);
+
+      update_stmt (stmt);
+    }
+
+  if (SSA_NAME_RANGE_INFO (phires))
+    reset_flow_sensitive_info (phires);
+
+  return true;
+}
+
 /* If PHI at MERGE is a "load PHI", PHI <*P, *Q> whose two arguments are
    single-use, non-volatile scalar MEM_REF loads reading the same memory state
    (same VUSE), factor the load out: introduce P' = PHI <P, Q> and a single
@@ -4496,6 +4635,11 @@ pass_phiopt::execute (function *)
       else if (single_pred_p (bb1)
 	       && !diamond_p
 	       && spaceship_replacement (bb, bb1, e1, e2, phi, arg0, arg1))
+	cfgchanged = true;
+      else if (!early_p
+	       && !diamond_p
+	       && single_pred_p (bb1)
+	       && simplify_phi_constants (phi, arg0, arg1, e1, e2))
 	cfgchanged = true;
     };
 
