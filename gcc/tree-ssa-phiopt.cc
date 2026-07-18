@@ -3915,7 +3915,8 @@ simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
       || tree_int_cst_sgn (arg0) <= 0
       || tree_int_cst_sgn (arg1) <= 0
       || !tree_fits_uhwi_p (arg0)
-      || !tree_fits_uhwi_p (arg1))
+      || !tree_fits_uhwi_p (arg1)
+      || virtual_operand_p (gimple_phi_result (phi)))
     return false;
 
   /* Check if phi_res is not used in any binary operation.
@@ -3978,6 +3979,11 @@ simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
   if (SSA_NAME_RANGE_INFO (phires))
     reset_flow_sensitive_info (phires);
 
+  /* Replace all current uses of phires with cst_lhs,
+     which will be the new tree for the CSTs.  */
+  tree cst_lhs = make_ssa_name (elems_type);
+  replace_uses_by (phires, cst_lhs);
+
   /* Create phires << log2(diff) stmt.  */
   gimple_stmt_iterator gsi;
   tree lshift_lhs = make_ssa_name (elems_type);
@@ -4023,25 +4029,11 @@ simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
       cst_stmt_operand = arg0;
     }
 
-  tree cst_lhs = make_ssa_name (elems_type);
   gimple *cst_stmt = gimple_build_assign (cst_lhs, cst_stmt_code,
 	cst_stmt_operand, lshift_lhs);
 
   gsi = gsi_for_stmt (shift_diff);
   gsi_insert_after (&gsi, cst_stmt, GSI_LAST_NEW_STMT);
-
-  /* Replace all uses of the old phi result with cst_lhs.  */
-  gimple *stmt;
-  FOR_EACH_IMM_USE_STMT (stmt, iter, phires)
-    {
-      if (stmt == shift_diff)
-	continue;
-
-      FOR_EACH_IMM_USE_ON_STMT (use_p, iter)
-	SET_USE (use_p, cst_lhs);
-
-      update_stmt (stmt);
-    }
 
   return true;
 }
