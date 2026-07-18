@@ -3910,8 +3910,8 @@ static bool
 simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
 			edge e0, edge e1)
 {
-  if (TREE_CODE (TREE_TYPE (arg0)) != INTEGER_CST
-      || TREE_CODE (TREE_TYPE (arg1)) != INTEGER_CST
+  if (TREE_CODE (arg0) != INTEGER_CST
+      || TREE_CODE (arg1) != INTEGER_CST
       || tree_int_cst_sgn (arg0) <= 0
       || tree_int_cst_sgn (arg1) <= 0
       || !tree_fits_uhwi_p (arg0)
@@ -4899,6 +4899,7 @@ pass_phiopt::execute (function *)
       else if (!early_p
 	       && !diamond_p
 	       && single_pred_p (bb1)
+	       && empty_block_p (bb1)
 	       && simplify_phi_constants (phi, arg0, arg1, e1, e2))
 	cfgchanged = true;
     };
