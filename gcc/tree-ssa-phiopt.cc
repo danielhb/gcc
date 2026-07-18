@@ -3659,8 +3659,8 @@ static bool
 simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
 			edge e0, edge e1)
 {
-  if (TREE_CODE (TREE_TYPE (arg0)) != INTEGER_TYPE
-      || TREE_CODE (TREE_TYPE (arg1)) != INTEGER_TYPE
+  if (TREE_CODE (TREE_TYPE (arg0)) != INTEGER_CST
+      || TREE_CODE (TREE_TYPE (arg1)) != INTEGER_CST
       || tree_int_cst_sgn (arg0) <= 0
       || tree_int_cst_sgn (arg1) <= 0
       || !tree_fits_uhwi_p (arg0)
