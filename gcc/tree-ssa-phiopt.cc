@@ -3916,7 +3916,8 @@ simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
       || tree_int_cst_sgn (arg1) <= 0
       || !tree_fits_uhwi_p (arg0)
       || !tree_fits_uhwi_p (arg1)
-      || virtual_operand_p (gimple_phi_result (phi)))
+      || virtual_operand_p (gimple_phi_result (phi))
+      || gimple_phi_num_args (phi) != 2)
     return false;
 
   /* Check if phi_res is not used in any binary operation.
