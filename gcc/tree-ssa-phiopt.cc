@@ -3941,10 +3941,16 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
 	return false;
     }
 
+  gcond *cond = as_a <gcond *> (*gsi_last_bb (cond_bb));
+  tree_code cond_code = gimple_cond_code (cond);
+  if (!tree_zero_one_valued_p (gimple_cond_lhs (cond))
+      || !integer_zerop (gimple_cond_rhs (cond))
+      || (cond_code != NE_EXPR && cond_code != EQ_EXPR))
+    return false;
+
   unsigned HOST_WIDE_INT diff = 0;
   unsigned HOST_WIDE_INT arg0_val = tree_to_uhwi (arg0);
   unsigned HOST_WIDE_INT arg1_val = tree_to_uhwi (arg1);
-  int log2_diff = 0;
   bool arg0_gt = false;
 
   if (arg0_val > arg1_val)
@@ -3955,78 +3961,50 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   else
     diff = arg1_val - arg0_val;
 
-  log2_diff = exact_log2 (diff);
-  if (log2_diff == -1)
-    return false;
-
   bool e0_true_edge = false;
   if (e0->flags & EDGE_TRUE_VALUE)
     e0_true_edge = true;
 
+  tree cst_stmt_operand;
+
+  /* zero_one NE 0 ? arg0 : arg1, arg0 > arg1 => arg1 + zero_one*diff;  */
+  if (cond_code == NE_EXPR && e0_true_edge && arg0_gt)
+    cst_stmt_operand = arg1;
+  /* zero_one NE 0 ? arg1 : arg0, arg1 > arg0 => arg0 + zero_one*diff;  */
+  else if (cond_code == NE_EXPR && !e0_true_edge && !arg0_gt)
+    cst_stmt_operand = arg0;
+  /* zero_one EQ 0 ? arg0 : arg1, arg0 < arg1 => arg0 + zero_one*diff;  */
+  else if (cond_code == EQ_EXPR && e0_true_edge && !arg0_gt)
+    cst_stmt_operand = arg0;
+  /* zero_one EQ 0 ? arg1 : arg0, arg1 < arg0 => arg1 + zero_one*diff;  */
+  else if (cond_code == EQ_EXPR && !e0_true_edge && arg0_gt)
+    cst_stmt_operand = arg1;
+  else
+    return false;
+
   /* At this point we're committed.  What we want now is:
-     - extract the gcond cmp into its own stmt;
-     - add a phires-type cast for cmp_stmt LHS;
-     - add a shift stmt with the cmp_stmt casted result;
+     - add a phires-type cast for gcond LHS;
+     - add a mult stmt with the cond_lhs casted result;
      - add the cst expression stmt to be used as the new
      tree for the PHI.  */
-  gcond *cond = as_a <gcond *> (*gsi_last_bb (cond_bb));
   gimple_stmt_iterator gsi = gsi_for_stmt (cond);
-
-  tree cmp_lhs = make_ssa_name (boolean_type_node);
-  gimple *cmp_stmt = gimple_build_assign (cmp_lhs,  gimple_cond_code (cond),
-	gimple_cond_lhs (cond), gimple_cond_rhs (cond));
-  gsi_insert_before (&gsi, cmp_stmt, GSI_LAST_NEW_STMT);
 
   tree elems_type = TREE_TYPE (phires);
   tree cast_lhs = make_ssa_name (elems_type);
-  gassign *cast_stmt = gimple_build_assign (cast_lhs, NOP_EXPR, cmp_lhs);
-  gsi_insert_after (&gsi, cast_stmt, GSI_LAST_NEW_STMT);
+  gassign *cast_stmt = gimple_build_assign (cast_lhs, NOP_EXPR,
+					    gimple_cond_lhs (cond));
+  gsi_insert_before (&gsi, cast_stmt, GSI_LAST_NEW_STMT);
 
-  /* Create phires << log2(diff) stmt.  */
-  tree lshift_lhs = make_ssa_name (elems_type);
-  gimple *shift_diff = gimple_build_assign (lshift_lhs, LSHIFT_EXPR,
-	cast_lhs, wide_int_to_tree(elems_type, log2_diff));
-  gsi_insert_after (&gsi, shift_diff, GSI_LAST_NEW_STMT);
+  /* cast_lhs * diff stmt.  */
+  tree mult_lhs = make_ssa_name (elems_type);
+  gimple *mult_diff = gimple_build_assign (mult_lhs, MULT_EXPR,
+	cast_lhs, wide_int_to_tree(elems_type, diff));
+  gsi_insert_after (&gsi, mult_diff, GSI_LAST_NEW_STMT);
 
-  /* Given CST_GT > CST_LT and changing the PHI args to 0 for
-     the false edge and 1 to the true edge:
-
-     - CST_GT coming from the true edge:
-     CST_LT + zero_one << log2(diff)
-
-     - CST_GT coming from the false edge:
-     CST_GT - zero_one << log2(diff).  */
-  tree_code cst_stmt_code;
-  tree cst_stmt_operand;
-
-  if (arg0_gt && e0_true_edge)
-    {
-      /* arg1 + zero_one << log2(diff)  */
-      cst_stmt_code = PLUS_EXPR;
-      cst_stmt_operand = arg1;
-    }
-  else if (arg0_gt && !e0_true_edge)
-    {
-      /* arg0 - zero_one << log2(diff)  */
-     cst_stmt_code = MINUS_EXPR;
-     cst_stmt_operand = arg0;
-    }
-  else if (!arg0_gt && e0_true_edge)
-    {
-      /*  arg1 - zero_one << log2(diff)  */
-      cst_stmt_code = MINUS_EXPR;
-      cst_stmt_operand = arg1;
-    }
-  else
-    {
-      /* arg0 + zero_one << log2(diff)  */
-      cst_stmt_code = PLUS_EXPR;
-      cst_stmt_operand = arg0;
-    }
-
+  /* CST + (cast_lhs * diff) stmt.  */
   tree cst_lhs = make_ssa_name (elems_type);
-  gimple *cst_stmt = gimple_build_assign (cst_lhs, cst_stmt_code,
-	cst_stmt_operand, lshift_lhs);
+  gimple *cst_stmt = gimple_build_assign (cst_lhs, PLUS_EXPR,
+	cst_stmt_operand, mult_lhs);
   gsi_insert_after (&gsi, cst_stmt, GSI_LAST_NEW_STMT);
 
   edge e;
