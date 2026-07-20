@@ -3665,16 +3665,19 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
       || tree_int_cst_sgn (arg0) <= 0
       || tree_int_cst_sgn (arg1) <= 0
       || !tree_fits_uhwi_p (arg0)
-      || !tree_fits_uhwi_p (arg1)
-      || virtual_operand_p (gimple_phi_result (phi))
-      || !INTEGRAL_TYPE_P (TREE_TYPE (gimple_phi_result (phi)))
+      || !tree_fits_uhwi_p (arg1))
+    return false;
+
+  tree phires = gimple_phi_result (phi);
+
+  if (virtual_operand_p (phires)
+      || !INTEGRAL_TYPE_P (TREE_TYPE (phires))
       || gimple_phi_num_args (phi) != 2)
     return false;
 
   /* Check if phi_res is not used in any binary operation.
      We make this check to avoid getting in the way of
      simplifications such as PR 122608 that are better.  */
-  tree phires = gimple_phi_result (phi);
   use_operand_p use_p;
   imm_use_iterator iter;
   FOR_EACH_IMM_USE_FAST (use_p, iter, phires)
@@ -3692,7 +3695,9 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
 
   gcond *cond = as_a <gcond *> (*gsi_last_bb (cond_bb));
   tree_code cond_code = gimple_cond_code (cond);
-  if (!tree_zero_one_valued_p (gimple_cond_lhs (cond))
+  tree zero_one = gimple_cond_lhs (cond);
+  if (!tree_zero_one_valued_p (zero_one)
+      || !INTEGRAL_TYPE_P (TREE_TYPE (zero_one))
       || !integer_zerop (gimple_cond_rhs (cond))
       || (cond_code != NE_EXPR && cond_code != EQ_EXPR))
     return false;
@@ -3740,8 +3745,7 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
 
   tree elems_type = TREE_TYPE (phires);
   tree cast_lhs = make_ssa_name (elems_type);
-  gassign *cast_stmt = gimple_build_assign (cast_lhs, NOP_EXPR,
-					    gimple_cond_lhs (cond));
+  gassign *cast_stmt = gimple_build_assign (cast_lhs, NOP_EXPR, zero_one);
   gsi_insert_before (&gsi, cast_stmt, GSI_LAST_NEW_STMT);
 
   /* cast_lhs * diff stmt.  */
