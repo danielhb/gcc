@@ -3656,7 +3656,8 @@ cond_if_else_store_replacement (basic_block then_bb, basic_block else_bb,
 }
 
 static bool
-simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
+simplify_phi_constants (basic_block cond_bb, gphi *phi,
+			tree arg0, tree arg1,
 			edge e0, edge e1)
 {
   if (TREE_CODE (arg0) != INTEGER_CST
@@ -3710,38 +3711,30 @@ simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
   if (e0->flags & EDGE_TRUE_VALUE)
     e0_true_edge = true;
 
-  /* At this point we're committed.  Insert a zero PHI arg
-     for the false edge, 1 for the true edge.  */
+  /* At this point we're committed.  What we want now is:
+     - extract the gcond cmp into its own stmt;
+     - add a phires-type cast for cmp_stmt LHS;
+     - add a shift stmt with the cmp_stmt casted result;
+     - add the cst expression stmt to be used as the new
+     tree for the PHI.  */
+  gcond *cond = as_a <gcond *> (*gsi_last_bb (cond_bb));
+  gimple_stmt_iterator gsi = gsi_for_stmt (cond);
+
+  tree cmp_lhs = make_ssa_name (boolean_type_node);
+  gimple *cmp_stmt = gimple_build_assign (cmp_lhs,  gimple_cond_code (cond),
+	gimple_cond_lhs (cond), gimple_cond_rhs (cond));
+  gsi_insert_before (&gsi, cmp_stmt, GSI_LAST_NEW_STMT);
+
   tree elems_type = TREE_TYPE (phires);
-  tree zero_arg = build_int_cst (elems_type, 0);
-  tree one_arg = build_int_cst (elems_type, 1);
-
-  if (e0_true_edge)
-    {
-      SET_PHI_ARG_DEF (phi, e0->dest_idx, one_arg);
-      SET_PHI_ARG_DEF (phi, e1->dest_idx, zero_arg);
-    }
-  else
-    {
-      SET_PHI_ARG_DEF (phi, e1->dest_idx, one_arg);
-      SET_PHI_ARG_DEF (phi, e0->dest_idx, zero_arg);
-    }
-  if (SSA_NAME_RANGE_INFO (phires))
-    reset_flow_sensitive_info (phires);
-
-  /* Replace all current uses of phires with cst_lhs,
-     which will be the new tree for the CSTs.  */
-  tree cst_lhs = make_ssa_name (elems_type);
-  replace_uses_by (phires, cst_lhs);
+  tree cast_lhs = make_ssa_name (elems_type);
+  gassign *cast_stmt = gimple_build_assign (cast_lhs, NOP_EXPR, cmp_lhs);
+  gsi_insert_after (&gsi, cast_stmt, GSI_LAST_NEW_STMT);
 
   /* Create phires << log2(diff) stmt.  */
-  gimple_stmt_iterator gsi;
   tree lshift_lhs = make_ssa_name (elems_type);
   gimple *shift_diff = gimple_build_assign (lshift_lhs, LSHIFT_EXPR,
-	phires, wide_int_to_tree(elems_type, log2_diff));
-
-  gsi = gsi_start_bb (phi->bb);
-  gsi_insert_before (&gsi, shift_diff, GSI_SAME_STMT);
+	cast_lhs, wide_int_to_tree(elems_type, log2_diff));
+  gsi_insert_after (&gsi, shift_diff, GSI_LAST_NEW_STMT);
 
   /* Given CST_GT > CST_LT and changing the PHI args to 0 for
      the false edge and 1 to the true edge:
@@ -3779,11 +3772,17 @@ simplify_phi_constants (gphi *phi, tree arg0, tree arg1,
       cst_stmt_operand = arg0;
     }
 
+  tree cst_lhs = make_ssa_name (elems_type);
   gimple *cst_stmt = gimple_build_assign (cst_lhs, cst_stmt_code,
 	cst_stmt_operand, lshift_lhs);
-
-  gsi = gsi_for_stmt (shift_diff);
   gsi_insert_after (&gsi, cst_stmt, GSI_LAST_NEW_STMT);
+
+  edge e;
+  if (e0->src == cond_bb)
+    e = e0;
+  else
+    e = e1;
+  replace_phi_edge_with_variable(cond_bb, e, phi, cst_lhs);
 
   return true;
 }
@@ -4634,7 +4633,7 @@ pass_phiopt::execute (function *)
 	       && !diamond_p
 	       && single_pred_p (bb1)
 	       && empty_block_p (bb1)
-	       && simplify_phi_constants (phi, arg0, arg1, e1, e2))
+	       && simplify_phi_constants (bb, phi, arg0, arg1, e1, e2))
 	cfgchanged = true;
     };
 
