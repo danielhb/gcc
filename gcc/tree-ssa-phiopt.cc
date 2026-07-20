@@ -3712,6 +3712,48 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   if (e0->flags & EDGE_TRUE_VALUE)
     e0_true_edge = true;
 
+
+  /* Given CST_GT > CST_LT and changing the PHI args to 0 for
+     the false edge and 1 to the true edge:
+
+     - CST_GT coming from the true edge:
+     CST_LT + zero_one << log2(diff)
+
+     - CST_GT coming from the false edge:
+     CST_GT - zero_one << log2(diff).  */
+  tree_code cst_stmt_code;
+  tree cst_stmt_operand;
+
+  if (arg0_gt && e0_true_edge)
+    {
+      /* arg1 + zero_one << log2(diff)  */
+      cst_stmt_code = PLUS_EXPR;
+      cst_stmt_operand = arg1;
+    }
+  else if (!arg0_gt && !e0_true_edge)
+    {
+      /* arg0 + zero_one << log2(diff)  */
+      cst_stmt_code = PLUS_EXPR;
+      cst_stmt_operand = arg0;
+    }
+  else
+    return false;
+
+#if 0
+  else if (arg0_gt && !e0_true_edge)
+    {
+      /* arg0 - zero_one << log2(diff)  */
+     cst_stmt_code = MINUS_EXPR;
+     cst_stmt_operand = arg0;
+    }
+  else if (!arg0_gt && e0_true_edge)
+    {
+      /*  arg1 - zero_one << log2(diff)  */
+      cst_stmt_code = MINUS_EXPR;
+      cst_stmt_operand = arg1;
+    }
+#endif
+
   /* At this point we're committed.  What we want now is:
      - extract the gcond cmp into its own stmt;
      - add a phires-type cast for cmp_stmt LHS;
@@ -3736,42 +3778,6 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   gimple *shift_diff = gimple_build_assign (lshift_lhs, LSHIFT_EXPR,
 	cast_lhs, wide_int_to_tree(elems_type, log2_diff));
   gsi_insert_after (&gsi, shift_diff, GSI_LAST_NEW_STMT);
-
-  /* Given CST_GT > CST_LT and changing the PHI args to 0 for
-     the false edge and 1 to the true edge:
-
-     - CST_GT coming from the true edge:
-     CST_LT + zero_one << log2(diff)
-
-     - CST_GT coming from the false edge:
-     CST_GT - zero_one << log2(diff).  */
-  tree_code cst_stmt_code;
-  tree cst_stmt_operand;
-
-  if (arg0_gt && e0_true_edge)
-    {
-      /* arg1 + zero_one << log2(diff)  */
-      cst_stmt_code = PLUS_EXPR;
-      cst_stmt_operand = arg1;
-    }
-  else if (arg0_gt && !e0_true_edge)
-    {
-      /* arg0 - zero_one << log2(diff)  */
-     cst_stmt_code = MINUS_EXPR;
-     cst_stmt_operand = arg0;
-    }
-  else if (!arg0_gt && e0_true_edge)
-    {
-      /*  arg1 - zero_one << log2(diff)  */
-      cst_stmt_code = MINUS_EXPR;
-      cst_stmt_operand = arg1;
-    }
-  else
-    {
-      /* arg0 + zero_one << log2(diff)  */
-      cst_stmt_code = PLUS_EXPR;
-      cst_stmt_operand = arg0;
-    }
 
   tree cst_lhs = make_ssa_name (elems_type);
   gimple *cst_stmt = gimple_build_assign (cst_lhs, cst_stmt_code,
