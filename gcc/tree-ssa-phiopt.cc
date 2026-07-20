@@ -3667,6 +3667,7 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
       || !tree_fits_uhwi_p (arg0)
       || !tree_fits_uhwi_p (arg1)
       || virtual_operand_p (gimple_phi_result (phi))
+      || !INTEGRAL_TYPE_P (TREE_TYPE (gimple_phi_result (phi)))
       || gimple_phi_num_args (phi) != 2)
     return false;
 
