@@ -3997,19 +3997,21 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   tree elems_type = TREE_TYPE (phires);
   tree cast_lhs = make_ssa_name (elems_type);
   gassign *cast_stmt = gimple_build_assign (cast_lhs, NOP_EXPR, zero_one);
-  gsi_insert_before (&gsi, cast_stmt, GSI_LAST_NEW_STMT);
+  gsi_insert_before (&gsi, cast_stmt, GSI_SAME_STMT);
 
   /* cast_lhs * diff stmt.  */
   tree mult_lhs = make_ssa_name (elems_type);
   gimple *mult_diff = gimple_build_assign (mult_lhs, MULT_EXPR,
 	cast_lhs, build_int_cst(elems_type, diff));
-  gsi_insert_after (&gsi, mult_diff, GSI_LAST_NEW_STMT);
+  gsi = gsi_for_stmt (cond);
+  gsi_insert_before (&gsi, mult_diff, GSI_SAME_STMT);
 
   /* CST + (cast_lhs * diff) stmt.  */
   tree cst_lhs = make_ssa_name (elems_type);
   gimple *cst_stmt = gimple_build_assign (cst_lhs, PLUS_EXPR,
 	cst_stmt_operand, mult_lhs);
-  gsi_insert_after (&gsi, cst_stmt, GSI_LAST_NEW_STMT);
+  gsi = gsi_for_stmt (cond);
+  gsi_insert_before (&gsi, cst_stmt, GSI_SAME_STMT);
 
   edge e;
   if (e0->src == cond_bb)
