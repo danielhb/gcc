@@ -3751,7 +3751,7 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   /* cast_lhs * diff stmt.  */
   tree mult_lhs = make_ssa_name (elems_type);
   gimple *mult_diff = gimple_build_assign (mult_lhs, MULT_EXPR,
-	cast_lhs, wide_int_to_tree(elems_type, diff));
+	cast_lhs, build_int_cst(elems_type, diff));
   gsi_insert_after (&gsi, mult_diff, GSI_LAST_NEW_STMT);
 
   /* CST + (cast_lhs * diff) stmt.  */
