@@ -3993,7 +3993,7 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
      tree for the PHI.  */
   gimple_stmt_iterator gsi = gsi_for_stmt (cond);
 
-  tree elems_type = TREE_TYPE (phires);
+  tree elems_type = TREE_TYPE (cst_stmt_operand);
   tree cast_lhs = make_ssa_name (elems_type);
   gassign *cast_stmt = gimple_build_assign (cast_lhs, NOP_EXPR, zero_one);
   gsi_insert_before (&gsi, cast_stmt, GSI_SAME_STMT);
