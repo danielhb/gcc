@@ -3991,33 +3991,38 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
      - add a mult stmt with the cond_lhs casted result;
      - add the cst expression stmt to be used as the new
      tree for the PHI.  */
-  gimple_stmt_iterator gsi = gsi_for_stmt (cond);
-
   tree elems_type = TREE_TYPE (cst_stmt_operand);
-  tree cast_lhs = make_ssa_name (elems_type);
-  gassign *cast_stmt = gimple_build_assign (cast_lhs, NOP_EXPR, zero_one);
-  gsi_insert_before (&gsi, cast_stmt, GSI_SAME_STMT);
+  tree new_phires = make_ssa_name (elems_type, NULL);
+  gphi *new_phi = create_phi_node (new_phires, phi->bb);
+  if (e0_true_edge)
+    {
+      SET_PHI_ARG_DEF (new_phi, e0->dest_idx, build_int_cst (elems_type, 1));
+      SET_PHI_ARG_DEF (new_phi, e1->dest_idx, build_int_cst (elems_type, 0));
+    }
+  else
+    {
+      SET_PHI_ARG_DEF (new_phi, e0->dest_idx, build_int_cst (elems_type, 0));
+      SET_PHI_ARG_DEF (new_phi, e1->dest_idx, build_int_cst (elems_type, 1));
+    }
 
-  /* cast_lhs * diff stmt.  */
+  gimple_stmt_iterator gsi = gsi_start_bb (phi->bb);
+
+  /* new_phires * diff stmt.  */
   tree mult_lhs = make_ssa_name (elems_type);
   gimple *mult_diff = gimple_build_assign (mult_lhs, MULT_EXPR,
-	cast_lhs, build_int_cst(elems_type, diff));
-  gsi = gsi_for_stmt (cond);
+	new_phires, build_int_cst(elems_type, diff));
   gsi_insert_before (&gsi, mult_diff, GSI_SAME_STMT);
 
   /* CST + (cast_lhs * diff) stmt.  */
   tree cst_lhs = make_ssa_name (elems_type);
   gimple *cst_stmt = gimple_build_assign (cst_lhs, PLUS_EXPR,
 	cst_stmt_operand, mult_lhs);
-  gsi = gsi_for_stmt (cond);
   gsi_insert_before (&gsi, cst_stmt, GSI_SAME_STMT);
 
-  edge e;
-  if (e0->src == cond_bb)
-    e = e0;
-  else
-    e = e1;
-  replace_phi_edge_with_variable(cond_bb, e, phi, cst_lhs);
+  replace_uses_by (phires, cst_lhs);
+
+  gsi = gsi_for_phi (phi);
+  gsi_remove (&gsi, true);
 
   return true;
 }
