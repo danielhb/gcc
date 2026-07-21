@@ -3926,23 +3926,22 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
       || gimple_phi_num_args (phi) != 2)
     return false;
 
-  /* Check if phi_res is not used in any binary operation.
-     We make this check to avoid getting in the way of
-     simplifications such as PR 122608 that are better.  */
-  use_operand_p use_p;
-  imm_use_iterator iter;
-  FOR_EACH_IMM_USE_FAST (use_p, iter, phires)
-    {
-      gimple *use_stmt = USE_STMT (use_p);
-      enum tree_code code;
+  /* Check if phi_res is single use and not used in any
+     binary operation.  We make this check to avoid getting
+     in the way of simplifications such as PR 122608 that
+     are better.  */
+  use_operand_p use;
+  gimple *use_stmt;
+  if (!single_imm_use (phires, &use, &use_stmt)
+      || (!is_a<gassign*> (use_stmt)
+	  && !is_a<gcall*> (use_stmt)
+	  && !is_a<greturn*> (use_stmt)))
+    return false;
 
-      if (!is_gimple_assign (use_stmt))
-	continue;
-
-      code = gimple_assign_rhs_code (use_stmt);
-      if (get_gimple_rhs_class (code) == GIMPLE_BINARY_RHS)
-	return false;
-    }
+  if (is_a<gassign*> (use_stmt)
+      && get_gimple_rhs_class (
+		gimple_assign_rhs_code (use_stmt)) == GIMPLE_BINARY_RHS)
+    return false;
 
   gcond *cond = as_a <gcond *> (*gsi_last_bb (cond_bb));
   tree_code cond_code = gimple_cond_code (cond);
