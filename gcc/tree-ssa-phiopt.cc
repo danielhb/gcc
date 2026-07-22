@@ -3732,7 +3732,6 @@ simplify_phi_constants (basic_block cond_bb, basic_block middle_bb,
   tree cst_stmt_operand;
   tree_code cst_stmt_code;
 
-  /* The 'true' leg resulting in the larger CST.  */
   if (e0_true_edge && arg0_gt)
     {
       /* arg0 > arg1, zero_one NE 0 ? arg0 : arg1 =>
@@ -3747,9 +3746,7 @@ simplify_phi_constants (basic_block cond_bb, basic_block middle_bb,
       cst_stmt_operand = arg0;
       cst_stmt_code = PLUS_EXPR;
     }
-
-  /* The 'true' leg resulting in the smaller CST.  */
-  if (e0_true_edge && !arg0_gt)
+  else if (e0_true_edge && !arg0_gt)
     {
       /* arg0 < arg1, zero_one NE 0 ? arg0 : arg1 =>
 	 arg1 - zero_one*diff;  */
