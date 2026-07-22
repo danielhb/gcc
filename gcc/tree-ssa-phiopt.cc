@@ -3665,7 +3665,8 @@ simplify_phi_constants (basic_block cond_bb, basic_block middle_bb,
       || tree_int_cst_sgn (arg0) <= 0
       || tree_int_cst_sgn (arg1) <= 0
       || !tree_fits_uhwi_p (arg0)
-      || !tree_fits_uhwi_p (arg1))
+      || !tree_fits_uhwi_p (arg1)
+      || (tree_to_uhwi (arg0) == tree_to_uhwi (arg1)))
     return false;
 
   tree phires = gimple_phi_result (phi);
