@@ -3994,16 +3994,30 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   tree elems_type = TREE_TYPE (cst_stmt_operand);
   tree new_phires = make_ssa_name (elems_type, NULL);
   gphi *new_phi = create_phi_node (new_phires, phi->bb);
+  
+  /* Assuming that cond_code == NE_EXPR, if we have
+ 
+     zero_one NE 0 ? CST1 : CST2
+            
+     zero_one will be 1 in the 'true' leg.  */
+  tree e0_arg, e1_arg;
   if (e0_true_edge)
     {
-      SET_PHI_ARG_DEF (new_phi, e0->dest_idx, build_int_cst (elems_type, 1));
-      SET_PHI_ARG_DEF (new_phi, e1->dest_idx, build_int_cst (elems_type, 0));
+      e0_arg = build_int_cst (elems_type, 1);
+      e1_arg = build_int_cst (elems_type, 0);
     }
   else
     {
-      SET_PHI_ARG_DEF (new_phi, e0->dest_idx, build_int_cst (elems_type, 0));
-      SET_PHI_ARG_DEF (new_phi, e1->dest_idx, build_int_cst (elems_type, 1));
+      e0_arg = build_int_cst (elems_type, 0);
+      e1_arg = build_int_cst (elems_type, 1);
     }
+
+  /* In case cond_code == EQ_EXPR swap the args.  */
+  if (cond_code == EQ_EXPR)
+    std::swap (e0_arg, e1_arg);
+
+  SET_PHI_ARG_DEF (new_phi, e0->dest_idx, e0_arg);
+  SET_PHI_ARG_DEF (new_phi, e1->dest_idx, e1_arg);
 
   gimple_stmt_iterator gsi = gsi_start_bb (phi->bb);
 
