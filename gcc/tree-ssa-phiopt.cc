@@ -3746,6 +3746,9 @@ simplify_phi_constants (basic_block cond_bb, basic_block middle_bb,
       cst_stmt_operand = arg0;
       cst_stmt_code = PLUS_EXPR;
     }
+  else
+    return false;
+#if 0
   else if (e0_true_edge && !arg0_gt)
     {
       /* arg0 < arg1, zero_one NE 0 ? arg0 : arg1 =>
@@ -3762,6 +3765,7 @@ simplify_phi_constants (basic_block cond_bb, basic_block middle_bb,
     }
   else
     gcc_unreachable ();
+#endif
 
   /* (typeof(phires)zero_one) stmt.  */
   tree elems_type = TREE_TYPE (phires);
