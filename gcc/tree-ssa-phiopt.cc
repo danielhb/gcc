@@ -3656,8 +3656,8 @@ cond_if_else_store_replacement (basic_block then_bb, basic_block else_bb,
 }
 
 static bool
-simplify_phi_constants (basic_block cond_bb, gphi *phi,
-			tree arg0, tree arg1,
+simplify_phi_constants (basic_block cond_bb, basic_block middle_bb,
+			gphi *phi, tree arg0, tree arg1,
 			edge e0, edge e1)
 {
   if (TREE_CODE (arg0) != INTEGER_CST
@@ -3785,12 +3785,19 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   gsi_remove (&gsi, true);
 
   edge e = e0;
+  edge edge_to_remove = e1;
   if (e0->src != cond->bb)
-    e = e1;
+    {
+      edge_to_remove = e0;
+      e = e1;
+    }
 
   e->flags |= EDGE_FALLTHRU;
   e->flags &= ~(EDGE_TRUE_VALUE | EDGE_FALSE_VALUE);
   e->probability = profile_probability::always ();
+
+  remove_edge (edge_to_remove);
+  delete_basic_block (middle_bb);
 
   gsi = gsi_for_stmt (cond);
   gsi_remove (&gsi, true);
@@ -4644,7 +4651,7 @@ pass_phiopt::execute (function *)
 	       && !diamond_p
 	       && single_pred_p (bb1)
 	       && empty_block_p (bb1)
-	       && simplify_phi_constants (bb, phi, arg0, arg1, e1, e2))
+	       && simplify_phi_constants (bb, bb1, phi, arg0, arg1, e1, e2))
 	cfgchanged = true;
     };
 
