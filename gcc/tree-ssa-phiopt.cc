@@ -3758,6 +3758,8 @@ simplify_phi_constants (basic_block cond_bb, basic_block middle_bb,
       cst_stmt_operand = arg0;
       cst_stmt_code = MINUS_EXPR;
     }
+  else
+    gcc_unreachable ();
 
   /* (typeof(phires)zero_one) stmt.  */
   tree elems_type = TREE_TYPE (phires);
