@@ -3970,21 +3970,35 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
     e0_true_edge = true;
 
   tree cst_stmt_operand;
+  tree_code cst_stmt_code;
 
-  /* zero_one NE 0 ? arg0 : arg1, arg0 > arg1 => arg1 + zero_one*diff;  */
-  if (cond_code == NE_EXPR && e0_true_edge && arg0_gt)
-    cst_stmt_operand = arg1;
-  /* zero_one NE 0 ? arg1 : arg0, arg1 > arg0 => arg0 + zero_one*diff;  */
-  else if (cond_code == NE_EXPR && !e0_true_edge && !arg0_gt)
-    cst_stmt_operand = arg0;
-  /* zero_one EQ 0 ? arg0 : arg1, arg0 < arg1 => arg0 + zero_one*diff;  */
-  else if (cond_code == EQ_EXPR && e0_true_edge && !arg0_gt)
-    cst_stmt_operand = arg0;
-  /* zero_one EQ 0 ? arg1 : arg0, arg1 < arg0 => arg1 + zero_one*diff;  */
-  else if (cond_code == EQ_EXPR && !e0_true_edge && arg0_gt)
-    cst_stmt_operand = arg1;
+  /* Assume cond_code == NE_EXPR and swap if cond_code == EQ_EXPR. */
+
+  /* zero_one NE 0 ? CST_GT : CST_LT will be reduced to
+     CST_LT + zero_one*diff; */
+  if ((e0_true_edge && arg0_gt)
+       || (!e0_true_edge && !arg0_gt))
+    {
+      cst_stmt_code = PLUS_EXPR;
+      cst_stmt_operand = arg0_gt ? arg1 : arg0;
+    }
+  /* zero_one NE 0 ? CST_LT : CST_GT will be reduced to
+     CST_GT - zero_one*diff; */
+  else if ((e0_true_edge && !arg0_gt)
+	    ||(!e0_true_edge && arg0_gt))
+    {
+      cst_stmt_code = MINUS_EXPR;
+      cst_stmt_operand = arg0_gt ? arg0 : arg1;
+    }
   else
-    return false;
+    gcc_unreachable ();
+
+  if (cond_code == EQ_EXPR)
+    {
+      cst_stmt_code = cst_stmt_code == PLUS_EXPR ? MINUS_EXPR : PLUS_EXPR;
+      cst_stmt_operand = cst_stmt_operand == arg0 ? arg1 : arg0;
+    }
+
 
   /* At this point we're committed.  What we want now is:
      - add a phires-type cast for gcond LHS;
@@ -4029,7 +4043,7 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
 
   /* CST + (cast_lhs * diff) stmt.  */
   tree cst_lhs = make_ssa_name (elems_type);
-  gimple *cst_stmt = gimple_build_assign (cst_lhs, PLUS_EXPR,
+  gimple *cst_stmt = gimple_build_assign (cst_lhs, cst_stmt_code,
 	cst_stmt_operand, mult_lhs);
   gsi_insert_before (&gsi, cst_stmt, GSI_SAME_STMT);
 
