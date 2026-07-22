@@ -27,6 +27,7 @@ int test4 (int a) {
 }
 
 int main (void) {
+  /* a & 1 ? 7 : 3;  */
   if (test (0) != 3)
     FAIL ();
   if (test (1) != 7)
@@ -34,6 +35,7 @@ int main (void) {
   if (test (3) != 7)
     FAIL ();
 
+  /* a & 1 ? 3 : 7;  */
   if (test2 (0) != 7)
     FAIL ();
   if (test2 (1) != 3)
@@ -41,6 +43,7 @@ int main (void) {
   if (test2 (3) != 3)
     FAIL ();
 
+  /* (a & 1) == 0 ? 3 : 7;  */
   if (test3 (0) != 3)
     FAIL ();
   if (test3 (1) != 7)
@@ -48,6 +51,7 @@ int main (void) {
   if (test3 (2) != 3)
     FAIL ();
 
+  /* (a & 1) == 0 ? 7 : 3;  */
   if (test4 (0) != 7)
     FAIL ();
   if (test4 (1) != 3)
