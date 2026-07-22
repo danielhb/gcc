@@ -3716,8 +3716,12 @@ simplify_phi_constants (basic_block cond_bb, basic_block middle_bb,
   unsigned HOST_WIDE_INT arg0_val = tree_to_uhwi (arg0);
   unsigned HOST_WIDE_INT arg1_val = tree_to_uhwi (arg1);
 
+  bool arg0_gt = false;
   if (arg0_val > arg1_val)
+  {
       diff = arg0_val - arg1_val;
+      arg0_gt = true;
+  }
   else
     diff = arg1_val - arg0_val;
 
@@ -3729,14 +3733,14 @@ simplify_phi_constants (basic_block cond_bb, basic_block middle_bb,
   tree_code cst_stmt_code;
 
   /* The 'true' leg resulting in the larger CST.  */
-  if (e0_true_edge && arg0_val > arg1_val)
+  if (e0_true_edge && arg0_gt)
     {
       /* arg0 > arg1, zero_one NE 0 ? arg0 : arg1 =>
 	 arg1 + zero_one*diff;  */
       cst_stmt_operand = arg1;
       cst_stmt_code = PLUS_EXPR;
     }
-  else if (!e0_true_edge && arg1_val > arg0_val)
+  else if (!e0_true_edge && !arg0_gt)
     {
       /* arg1 > arg0, zero_one NE 0 ? arg1 : arg0 =>
 	 arg0 + zero_one*diff;  */
@@ -3745,14 +3749,14 @@ simplify_phi_constants (basic_block cond_bb, basic_block middle_bb,
     }
 
   /* The 'true' leg resulting in the smaller CST.  */
-  if (e0_true_edge && arg0_val < arg1_val)
+  if (e0_true_edge && !arg0_gt)
     {
       /* arg0 < arg1, zero_one NE 0 ? arg0 : arg1 =>
 	 arg1 - zero_one*diff;  */
       cst_stmt_operand = arg1;
       cst_stmt_code = MINUS_EXPR;
     }
-  else if (!e0_true_edge && arg1_val < arg0_val)
+  else if (!e0_true_edge && arg0_gt)
     {
       /* arg1 < arg0, zero_one NE 0 ? arg1 : arg0 =>
 	 arg0 - zero_one*diff;  */
