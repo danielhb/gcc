@@ -3701,16 +3701,22 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
       || (cond_code != NE_EXPR && cond_code != EQ_EXPR))
     return false;
 
+  /* At this point we're committed.  What we want now is:
+     - canonicalize to NE_EXPR if needed to simplify our logic;
+     - add a phires-type cast for gcond LHS;
+     - add a mult stmt with the cond_lhs casted result;
+     - add the cst expression stmt to be used as the new
+     tree for the PHI.  */
+
+  if (cond_code == EQ_EXPR)
+    std::swap (arg0, arg1);
+
   unsigned HOST_WIDE_INT diff = 0;
   unsigned HOST_WIDE_INT arg0_val = tree_to_uhwi (arg0);
   unsigned HOST_WIDE_INT arg1_val = tree_to_uhwi (arg1);
-  bool arg0_gt = false;
 
   if (arg0_val > arg1_val)
-    {
       diff = arg0_val - arg1_val;
-      arg0_gt = true;
-    }
   else
     diff = arg1_val - arg0_val;
 
@@ -3719,58 +3725,74 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
     e0_true_edge = true;
 
   tree cst_stmt_operand;
+  tree_code cst_stmt_code;
 
-  /* zero_one NE 0 ? arg0 : arg1, arg0 > arg1 => arg1 + zero_one*diff;  */
-  if (cond_code == NE_EXPR && e0_true_edge && arg0_gt)
-    cst_stmt_operand = arg1;
-  /* zero_one NE 0 ? arg1 : arg0, arg1 > arg0 => arg0 + zero_one*diff;  */
-  else if (cond_code == NE_EXPR && !e0_true_edge && !arg0_gt)
-    cst_stmt_operand = arg0;
-  /* zero_one EQ 0 ? arg0 : arg1, arg0 < arg1 => arg0 + zero_one*diff;  */
-  else if (cond_code == EQ_EXPR && e0_true_edge && !arg0_gt)
-    cst_stmt_operand = arg0;
-  /* zero_one EQ 0 ? arg1 : arg0, arg1 < arg0 => arg1 + zero_one*diff;  */
-  else if (cond_code == EQ_EXPR && !e0_true_edge && arg0_gt)
-    cst_stmt_operand = arg1;
-  else
-    return false;
-
-  /* At this point we're committed.  What we want now is:
-     - add a phires-type cast for gcond LHS;
-     - add a mult stmt with the cond_lhs casted result;
-     - add the cst expression stmt to be used as the new
-     tree for the PHI.  */
-  tree elems_type = TREE_TYPE (cst_stmt_operand);
-  tree new_phires = make_ssa_name (elems_type, NULL);
-  gphi *new_phi = create_phi_node (new_phires, phi->bb);
-  if (e0_true_edge)
+  /* The 'true' leg resulting in the larger CST.  */
+  if (e0_true_edge && arg0_val > arg1_val)
     {
-      SET_PHI_ARG_DEF (new_phi, e0->dest_idx, build_int_cst (elems_type, 1));
-      SET_PHI_ARG_DEF (new_phi, e1->dest_idx, build_int_cst (elems_type, 0));
+      /* arg0 > arg1, zero_one NE 0 ? arg0 : arg1 =>
+	 arg1 + zero_one*diff;  */
+      cst_stmt_operand = arg1;
+      cst_stmt_code = PLUS_EXPR;
     }
-  else
+  else if (!e0_true_edge && arg1_val > arg0_val)
     {
-      SET_PHI_ARG_DEF (new_phi, e0->dest_idx, build_int_cst (elems_type, 0));
-      SET_PHI_ARG_DEF (new_phi, e1->dest_idx, build_int_cst (elems_type, 1));
+      /* arg1 > arg0, zero_one NE 0 ? arg1 : arg0 =>
+	 arg0 + zero_one*diff;  */
+      cst_stmt_operand = arg0;
+      cst_stmt_code = PLUS_EXPR;
     }
 
-  gimple_stmt_iterator gsi = gsi_start_bb (phi->bb);
+  /* The 'true' leg resulting in the smaller CST.  */
+  if (e0_true_edge && arg0_val < arg1_val)
+    {
+      /* arg0 < arg1, zero_one NE 0 ? arg0 : arg1 =>
+	 arg1 - zero_one*diff;  */
+      cst_stmt_operand = arg1;
+      cst_stmt_code = MINUS_EXPR;
+    }
+  else if (!e0_true_edge && arg1_val < arg0_val)
+    {
+      /* arg1 < arg0, zero_one NE 0 ? arg1 : arg0 =>
+	 arg0 - zero_one*diff;  */
+      cst_stmt_operand = arg0;
+      cst_stmt_code = MINUS_EXPR;
+    }
 
-  /* new_phires * diff stmt.  */
+  /* (typeof(phires)zero_one) stmt.  */
+  tree elems_type = TREE_TYPE (phires);
+  tree cast_lhs = make_ssa_name (elems_type);
+  gassign *cast_stmt = gimple_build_assign (cast_lhs, NOP_EXPR, zero_one);
+
+  /* cast_lhs*diff stmt.  */
   tree mult_lhs = make_ssa_name (elems_type);
   gimple *mult_diff = gimple_build_assign (mult_lhs, MULT_EXPR,
-	new_phires, build_int_cst(elems_type, diff));
-  gsi_insert_before (&gsi, mult_diff, GSI_SAME_STMT);
+	cast_lhs, build_int_cst(elems_type, diff));
 
   /* CST + (cast_lhs * diff) stmt.  */
   tree cst_lhs = make_ssa_name (elems_type);
-  gimple *cst_stmt = gimple_build_assign (cst_lhs, PLUS_EXPR,
+  gimple *cst_stmt = gimple_build_assign (cst_lhs, cst_stmt_code,
 	cst_stmt_operand, mult_lhs);
+
+  gimple_stmt_iterator gsi = gsi_for_stmt (cond);
+  gsi_insert_before (&gsi, cast_stmt, GSI_SAME_STMT);
+  gsi_insert_before (&gsi, mult_diff, GSI_SAME_STMT);
   gsi_insert_before (&gsi, cst_stmt, GSI_SAME_STMT);
 
   replace_uses_by (phires, cst_lhs);
 
   gsi = gsi_for_phi (phi);
+  gsi_remove (&gsi, true);
+
+  edge e = e0;
+  if (e0->src != cond->bb)
+    e = e1;
+
+  e->flags |= EDGE_FALLTHRU;
+  e->flags &= ~(EDGE_TRUE_VALUE | EDGE_FALSE_VALUE);
+  e->probability = profile_probability::always ();
+
+  gsi = gsi_for_stmt (cond);
   gsi_remove (&gsi, true);
 
   return true;
