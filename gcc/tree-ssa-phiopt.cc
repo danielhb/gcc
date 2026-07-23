@@ -3952,6 +3952,20 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
       || (cond_code != NE_EXPR && cond_code != EQ_EXPR))
     return false;
 
+  /* At this point we're committed.  What we want now is:
+     - if we have an EQ_EXPR canonicalize it to NE_EXPR to
+       simplify the logic;
+     - add a phires-type cast for gcond LHS;
+     - add a mult stmt with the cond_lhs casted result;
+     - add the cst expression stmt to be used as the new
+     tree for the PHI.  */
+
+  if (cond_code == EQ_EXPR)
+    {
+      gimple_cond_set_code (cond, NE_EXPR);
+      std::swap (arg0, arg1);
+    }
+
   unsigned HOST_WIDE_INT diff = 0;
   unsigned HOST_WIDE_INT arg0_val = tree_to_uhwi (arg0);
   unsigned HOST_WIDE_INT arg1_val = tree_to_uhwi (arg1);
@@ -3972,8 +3986,6 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   tree cst_stmt_operand;
   tree_code cst_stmt_code;
 
-  /* Assume cond_code == NE_EXPR and swap if cond_code == EQ_EXPR. */
-
   /* zero_one NE 0 ? CST_GT : CST_LT will be reduced to
      CST_LT + zero_one*diff; */
   if ((e0_true_edge && arg0_gt)
@@ -3985,7 +3997,7 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   /* zero_one NE 0 ? CST_LT : CST_GT will be reduced to
      CST_GT - zero_one*diff; */
   else if ((e0_true_edge && !arg0_gt)
-	    ||(!e0_true_edge && arg0_gt))
+	    || (!e0_true_edge && arg0_gt))
     {
       cst_stmt_code = MINUS_EXPR;
       cst_stmt_operand = arg0_gt ? arg0 : arg1;
@@ -3993,27 +4005,12 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   else
     gcc_unreachable ();
 
-  if (cond_code == EQ_EXPR)
-    {
-      cst_stmt_code = cst_stmt_code == PLUS_EXPR ? MINUS_EXPR : PLUS_EXPR;
-      cst_stmt_operand = cst_stmt_operand == arg0 ? arg1 : arg0;
-    }
-
-
-  /* At this point we're committed.  What we want now is:
-     - add a phires-type cast for gcond LHS;
-     - add a mult stmt with the cond_lhs casted result;
-     - add the cst expression stmt to be used as the new
-     tree for the PHI.  */
   tree elems_type = TREE_TYPE (cst_stmt_operand);
   tree new_phires = make_ssa_name (elems_type, NULL);
   gphi *new_phi = create_phi_node (new_phires, phi->bb);
   
-  /* Assuming that cond_code == NE_EXPR, if we have
- 
-     zero_one NE 0 ? CST1 : CST2
-            
-     zero_one will be 1 in the 'true' leg.  */
+  /* For zero_one NE 0 ? CST1 : CST2, zero_one == 1
+     in the 'true' edge.  */
   tree e0_arg, e1_arg;
   if (e0_true_edge)
     {
@@ -4025,10 +4022,6 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
       e0_arg = build_int_cst (elems_type, 0);
       e1_arg = build_int_cst (elems_type, 1);
     }
-
-  /* In case cond_code == EQ_EXPR swap the args.  */
-  if (cond_code == EQ_EXPR)
-    std::swap (e0_arg, e1_arg);
 
   SET_PHI_ARG_DEF (new_phi, e0->dest_idx, e0_arg);
   SET_PHI_ARG_DEF (new_phi, e1->dest_idx, e1_arg);
