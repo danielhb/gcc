@@ -4045,7 +4045,7 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   gimple *cst_stmt = gimple_build_assign (cst_lhs, cst_stmt_code,
 	cst_stmt_operand, mult_lhs);
 
-  gimple_stmt_iterator gsi = gsi_last_bb (cond_bb);
+  gimple_stmt_iterator gsi = gsi_for_stmt (cond);
   gsi_insert_before (&gsi, cast_stmt, GSI_SAME_STMT);
   gsi_insert_before (&gsi, mult_diff, GSI_SAME_STMT);
   gsi_insert_before (&gsi, cst_stmt, GSI_SAME_STMT);
