@@ -4006,6 +4006,8 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
     gcc_unreachable ();
 
   tree elems_type = TREE_TYPE (cst_stmt_operand);
+#if 0    
+
   tree new_phires = make_ssa_name (elems_type, NULL);
   gphi *new_phi = create_phi_node (new_phires, phi->bb);
   
@@ -4027,23 +4029,33 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   SET_PHI_ARG_DEF (new_phi, e1->dest_idx, e1_arg);
 
   gimple_stmt_iterator gsi = gsi_start_bb (phi->bb);
+#endif  
 
-  /* new_phires * diff stmt.  */
+  /* (typeof phires) zero_one */
+  tree cast_lhs = make_ssa_name (elems_type);
+  gassign *cast_stmt = gimple_build_assign (cast_lhs, NOP_EXPR, zero_one);
+
+  /* cast_lhs * diff stmt.  */
   tree mult_lhs = make_ssa_name (elems_type);
   gimple *mult_diff = gimple_build_assign (mult_lhs, MULT_EXPR,
-	new_phires, build_int_cst(elems_type, diff));
-  gsi_insert_before (&gsi, mult_diff, GSI_SAME_STMT);
+	cast_lhs, build_int_cst(elems_type, diff));
 
   /* CST + (cast_lhs * diff) stmt.  */
   tree cst_lhs = make_ssa_name (elems_type);
   gimple *cst_stmt = gimple_build_assign (cst_lhs, cst_stmt_code,
 	cst_stmt_operand, mult_lhs);
+
+  gimple_stmt_iterator gsi = gsi_last_bb (cond_bb);
+  gsi_insert_before (&gsi, cast_stmt, GSI_SAME_STMT);
+  gsi_insert_before (&gsi, mult_diff, GSI_SAME_STMT);
   gsi_insert_before (&gsi, cst_stmt, GSI_SAME_STMT);
 
-  replace_uses_by (phires, cst_lhs);
-
-  gsi = gsi_for_phi (phi);
-  gsi_remove (&gsi, true);
+  edge e;
+  if (e0->src == cond_bb)
+    e = e0;
+  else
+    e = e1;
+  replace_phi_edge_with_variable(cond_bb, e, phi, cst_lhs);
 
   return true;
 }
