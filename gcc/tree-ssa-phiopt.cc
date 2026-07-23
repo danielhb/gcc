@@ -3909,7 +3909,8 @@ cond_if_else_store_replacement (basic_block then_bb, basic_block else_bb,
 static bool
 simplify_phi_constants (basic_block cond_bb, gphi *phi,
 			tree arg0, tree arg1,
-			edge e0, edge e1)
+			edge e0)
+			//edge e0, edge e1)
 {
   if (TREE_CODE (arg0) != INTEGER_CST
       || TREE_CODE (arg1) != INTEGER_CST
@@ -4029,7 +4030,7 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   SET_PHI_ARG_DEF (new_phi, e1->dest_idx, e1_arg);
 
   gimple_stmt_iterator gsi = gsi_start_bb (phi->bb);
-#endif  
+
 
   /* (typeof phires) zero_one */
   tree cast_lhs = make_ssa_name (elems_type);
@@ -4044,18 +4045,32 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   tree cst_lhs = make_ssa_name (elems_type);
   gimple *cst_stmt = gimple_build_assign (cst_lhs, cst_stmt_code,
 	cst_stmt_operand, mult_lhs);
+#endif
+  gimple_seq seq = nullptr;
+
+  /* (typeof phires) zero_one */
+  tree cast_lhs = gimple_build (&seq, NOP_EXPR, elems_type, zero_one);
+
+  /* cast_lhs * diff stmt.  */
+  tree mult_lhs = gimple_build (&seq, MULT_EXPR, elems_type,
+	cast_lhs, build_int_cst(elems_type, diff));
+
+  /* CST + (cast_lhs * diff) stmt.  */
+  tree cst_lhs = gimple_build (&seq, cst_stmt_code, elems_type,
+	cst_stmt_operand, mult_lhs);
 
   gimple_stmt_iterator gsi = gsi_for_stmt (cond);
-  gsi_insert_before (&gsi, cast_stmt, GSI_SAME_STMT);
-  gsi_insert_before (&gsi, mult_diff, GSI_SAME_STMT);
-  gsi_insert_before (&gsi, cst_stmt, GSI_SAME_STMT);
+  gsi_insert_seq_before (&gsi, seq, GSI_CONTINUE_LINKING);
 
-  edge e;
-  if (e0->src == cond_bb)
-    e = e0;
-  else
-    e = e1;
-  replace_phi_edge_with_variable(cond_bb, e, phi, cst_lhs);
+  edge e = EDGE_SUCC (cond_bb, 0);
+  if (e->dest != phi->bb)
+    {
+      e = EDGE_SUCC (cond_bb, 1);
+      if (e->dest != phi->bb)
+	gcc_unreachable ();
+    }
+
+  replace_phi_edge_with_variable (cond_bb, e, phi, cst_lhs);
 
   return true;
 }
@@ -4914,7 +4929,7 @@ pass_phiopt::execute (function *)
 	       && !diamond_p
 	       && single_pred_p (bb1)
 	       && empty_block_p (bb1)
-	       && simplify_phi_constants (bb, phi, arg0, arg1, e1, e2))
+	       && simplify_phi_constants (bb, phi, arg0, arg1, e1)) //, e2))
 	cfgchanged = true;
     };
 
