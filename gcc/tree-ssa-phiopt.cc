@@ -3911,7 +3911,8 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
 			tree arg0, tree arg1,
 			edge e0, edge e1)
 {
-  if (TREE_CODE (arg0) != INTEGER_CST
+  if (gimple_phi_num_args (phi) != 2
+      || TREE_CODE (arg0) != INTEGER_CST
       || TREE_CODE (arg1) != INTEGER_CST
       || tree_int_cst_sgn (arg0) <= 0
       || tree_int_cst_sgn (arg1) <= 0
@@ -3922,8 +3923,7 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   tree phires = gimple_phi_result (phi);
 
   if (virtual_operand_p (phires)
-      || !INTEGRAL_TYPE_P (TREE_TYPE (phires))
-      || gimple_phi_num_args (phi) != 2)
+      || !INTEGRAL_TYPE_P (TREE_TYPE (phires)))
     return false;
 
   /* Check if phi_res is single use and not used in any
@@ -3935,12 +3935,10 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   if (!single_imm_use (phires, &use, &use_stmt)
       || (!is_a<gassign*> (use_stmt)
 	  && !is_a<gcall*> (use_stmt)
-	  && !is_a<greturn*> (use_stmt)))
-    return false;
-
-  if (is_a<gassign*> (use_stmt)
-      && get_gimple_rhs_class (
-		gimple_assign_rhs_code (use_stmt)) == GIMPLE_BINARY_RHS)
+	  && !is_a<greturn*> (use_stmt))
+      || (is_a<gassign*> (use_stmt)
+	  && get_gimple_rhs_class (
+		gimple_assign_rhs_code (use_stmt)) == GIMPLE_BINARY_RHS))
     return false;
 
   gcond *cond = as_a <gcond *> (*gsi_last_bb (cond_bb));
@@ -3955,10 +3953,10 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   /* At this point we're committed.  What we want now is:
      - if we have an EQ_EXPR canonicalize it to NE_EXPR to
        simplify the logic;
-     - add a phires-type cast for gcond LHS;
-     - add a mult stmt with the cond_lhs casted result;
-     - add the cst expression stmt to be used as the new
-     tree for the PHI.  */
+     - add a "new_phires = PHI <0, 1>;" gphi;
+     - add a "new_phires * (CST_GT - CST_LT)" stmt;
+     - add a "CST PLUS|MINUS (new_phires*diff)" stmt;
+     - replace phires with new_phires and remove the old PHI.  */
 
   if (cond_code == EQ_EXPR)
     {
@@ -4008,7 +4006,7 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   tree elems_type = TREE_TYPE (cst_stmt_operand);
   tree new_phires = make_ssa_name (elems_type, NULL);
   gphi *new_phi = create_phi_node (new_phires, phi->bb);
-  
+
   /* For zero_one NE 0 ? CST1 : CST2, zero_one == 1
      in the 'true' edge.  */
   tree e0_arg, e1_arg;
@@ -4026,19 +4024,22 @@ simplify_phi_constants (basic_block cond_bb, gphi *phi,
   SET_PHI_ARG_DEF (new_phi, e0->dest_idx, e0_arg);
   SET_PHI_ARG_DEF (new_phi, e1->dest_idx, e1_arg);
 
-  gimple_stmt_iterator gsi = gsi_start_bb (phi->bb);
+  gimple_seq seq = nullptr;
 
   /* new_phires * diff stmt.  */
-  tree mult_lhs = make_ssa_name (elems_type);
-  gimple *mult_diff = gimple_build_assign (mult_lhs, MULT_EXPR,
+  tree mult_lhs = gimple_build (&seq, MULT_EXPR, elems_type,
 	new_phires, build_int_cst(elems_type, diff));
-  gsi_insert_before (&gsi, mult_diff, GSI_SAME_STMT);
-
-  /* CST + (cast_lhs * diff) stmt.  */
-  tree cst_lhs = make_ssa_name (elems_type);
-  gimple *cst_stmt = gimple_build_assign (cst_lhs, cst_stmt_code,
+  /* CST PLUS|MINUS (new_phires*diff) stmt.  */
+  tree cst_lhs = gimple_build (&seq, cst_stmt_code, elems_type,
 	cst_stmt_operand, mult_lhs);
-  gsi_insert_before (&gsi, cst_stmt, GSI_SAME_STMT);
+
+  /* In theory we could do replace_phi_edge_with_variable here and
+     be done with it but bootstrap really dislikes that.  In the
+     next phiopt pass match_simplify_replacement will replace the
+     phi and make a better job at it, so for now we're happy
+     with just adjusting the new PHI and the extra stmts.  */
+  gimple_stmt_iterator gsi = gsi_start_bb (phi->bb);
+  gsi_insert_seq_before (&gsi, seq, GSI_CONTINUE_LINKING);
 
   replace_uses_by (phires, cst_lhs);
 
