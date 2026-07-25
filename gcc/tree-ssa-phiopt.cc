@@ -3971,7 +3971,7 @@ canonicalize_phi_constants (basic_block cond_bb, gphi *phi,
   gimple *use_stmt;
   if (!single_imm_use (phires, &use, &use_stmt)
       || (!is_a<gassign*> (use_stmt)
-	  && !is_a<gcall*> (use_stmt)
+	  // && !is_a<gcall*> (use_stmt)
 	  && !is_a<greturn*> (use_stmt))
       || (is_a<gassign*> (use_stmt)
 	  && get_gimple_rhs_class (
