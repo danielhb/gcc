@@ -4020,14 +4020,12 @@ canonicalize_phi_constants (basic_block cond_bb, gphi *phi,
     e0_true_edge = true;
 
   tree cst_stmt_operand;
-  tree_code cst_stmt_code;
 
   /* zero_one NE 0 ? CST_GT : CST_LT will be reduced to
      CST_LT + zero_one*diff; */
   if ((e0_true_edge && arg0_gt)
        || (!e0_true_edge && !arg0_gt))
     {
-      cst_stmt_code = PLUS_EXPR;
       cst_stmt_operand = arg0_gt ? arg1 : arg0;
     }
   /* zero_one NE 0 ? CST_LT : CST_GT will be reduced to
@@ -4035,7 +4033,7 @@ canonicalize_phi_constants (basic_block cond_bb, gphi *phi,
   else if ((e0_true_edge && !arg0_gt)
 	    || (!e0_true_edge && arg0_gt))
     {
-      cst_stmt_code = MINUS_EXPR;
+      diff = -diff;
       cst_stmt_operand = arg0_gt ? arg0 : arg1;
     }
   else
@@ -4067,8 +4065,8 @@ canonicalize_phi_constants (basic_block cond_bb, gphi *phi,
   /* new_phires * diff stmt.  */
   tree mult_lhs = gimple_build (&seq, MULT_EXPR, elems_type,
 	new_phires, build_int_cst (elems_type, diff));
-  /* CST PLUS|MINUS (new_phires*diff) stmt.  */
-  tree cst_lhs = gimple_build (&seq, cst_stmt_code, elems_type,
+  /* CST PLUS (new_phires*diff) stmt.  */
+  tree cst_lhs = gimple_build (&seq, PLUS_EXPR, elems_type,
 	cst_stmt_operand, mult_lhs);
 
   /* In theory we could do replace_phi_edge_with_variable here and
