@@ -6273,14 +6273,25 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
    _6 = _1 | _4;
 
    I.e. it'll drop the 'mult' and lshift the zero_one result from the
-   bit check.  This is where we can reduce it.  */
+   bit check.  The 3 middle stmts can be reduced to:
+
+   _3 = 1 << bit_7;
+   _4 = _1 & _3;
+
+   Resulting in:
+
+   _1 = arrD.4482;
+   _3 = 1 << bit_7;
+   _4 = _1 & _3
+   _6 = _1 | _4;
+
+   Which will reduce to just _1.  Simplifying the middle stmts has the
+   advantage of also benefitting other optimizations as well.  */
 (simplify
-  (bit_ior:c
-    @0
-    (lshift
-      (bit_and:c (rshift @0 @1) integer_onep)
-      @1))
-  @0)
+  (lshift
+    (bit_and:c (rshift @0 @1) integer_onep)
+     @1)
+  (bit_and @0 (lshift { build_one_cst (type); } @1)))
 
 #if GIMPLE
 (match (nop_atomic_bit_test_and_p @0 @1 @4)
