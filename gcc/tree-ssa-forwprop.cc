@@ -3623,6 +3623,108 @@ simplify_count_zeroes (gimple_stmt_iterator *gsi)
   return true;
 }
 
+/* Verify if we have the following structure:
+
+   iftmp1 = PHI <pow2a, pow2b>
+   _ssa1 = _ssa2 MOD|DIV iftmp1;
+   _ssa3 = _ssa1 EQ|NE 0;
+
+   And, as long as "_ssa2" is either known to be positive or
+   "_ssa1" is single use in a zero comparison, change the PHI
+   args and "_ssa1" stmt to a cheaper alternative.
+
+   For MOD:
+
+   iftmp1 = PHI <(pow2a - 1), (pow2b - 1)>
+   _ssa1 = _ssa2 & iftmp1;
+
+   For DIV:
+
+   iftmp1 = PHI <log2 (pow2a), log2 (pow2b)>
+   _ssa1 = _ssa2 >> iftmp1;  */
+static bool
+simplify_phi_result_op (gimple *stmt, tree_code code)
+{
+  gphi *phi = dyn_cast<gphi *> (SSA_NAME_DEF_STMT (gimple_assign_rhs2 (stmt)));
+  if (gimple_phi_num_args (phi) != 2)
+    return false;
+
+  tree arg0 = gimple_phi_arg_def (phi, 0);
+  tree arg1 = gimple_phi_arg_def (phi, 1);
+
+  if (!integer_pow2p (arg0) || !tree_fits_uhwi_p (arg0)
+      || !integer_pow2p (arg1) || !tree_fits_uhwi_p (arg1))
+    return false;
+
+  tree_code new_code;
+  switch (code)
+    {
+      case TRUNC_MOD_EXPR:
+      case CEIL_MOD_EXPR:
+      case FLOOR_MOD_EXPR:
+      case ROUND_MOD_EXPR:
+	new_code = BIT_AND_EXPR;
+	break;
+      case TRUNC_DIV_EXPR:
+      case CEIL_DIV_EXPR:
+      case FLOOR_DIV_EXPR:
+      case ROUND_DIV_EXPR:
+	new_code = RSHIFT_EXPR;
+	break;
+
+     default:
+	return false;
+    }
+
+  /* If rhs1 is a known positive value we can always apply these
+     simplification.  Otherwise see if lhs is single_use with a
+     EQ|NE 0 cmp.  */
+  tree rhs1 = gimple_assign_rhs1 (stmt);
+  if (!tree_expr_nonnegative_p (rhs1))
+    {
+      gimple *cmp_stmt;
+      use_operand_p use_p;
+
+      if (!single_imm_use (gimple_assign_lhs (stmt), &use_p, &cmp_stmt)
+	  || !cmp_stmt
+	  || !is_gimple_assign (cmp_stmt))
+	return false;
+
+      if (!(gimple_assign_rhs_code (cmp_stmt) == NE_EXPR
+	    || gimple_assign_rhs_code (cmp_stmt) == EQ_EXPR))
+	return false;
+
+      if (!integer_zerop (gimple_assign_rhs2 (cmp_stmt)))
+	return false;
+    }
+
+  tree phires = gimple_phi_result (phi);
+  tree type = TREE_TYPE (phires);
+  tree new_arg0, new_arg1;
+
+  if (new_code == RSHIFT_EXPR)
+    {
+      new_arg0 = build_int_cst (type, wi::exact_log2 (tree_to_uhwi (arg0)));
+      new_arg1 = build_int_cst (type, wi::exact_log2 (tree_to_uhwi (arg1)));
+    }
+  else
+    {
+      new_arg0 = build_int_cst (type, tree_to_uhwi (arg0) - 1);
+      new_arg1 = build_int_cst (type, tree_to_uhwi (arg1) - 1);
+    }
+
+  SET_PHI_ARG_DEF (phi, 0, new_arg0);
+  SET_PHI_ARG_DEF (phi, 1, new_arg1);
+  if (SSA_NAME_RANGE_INFO (phires))
+    reset_flow_sensitive_info (phires);
+
+  gimple_assign_set_rhs1 (stmt, rhs1);
+  gimple_assign_set_rhs2 (stmt, phires);
+  gimple_assign_set_rhs_code (stmt, new_code);
+  update_stmt (stmt);
+
+  return true;
+}
 
 /* Determine whether applying the 2 permutations (mask1 then mask2)
    gives back one of the input.  */
@@ -5894,6 +5996,12 @@ pass_forwprop::execute (function *fun)
 		      changed |= simplify_vector_constructor (&gsi);
 		    else if (code == ARRAY_REF)
 		      changed |= simplify_count_zeroes (&gsi);
+		    else if (get_gimple_rhs_class (code) == GIMPLE_BINARY_RHS
+			     && has_single_use (gimple_assign_rhs2 (stmt))
+			     && SSA_NAME_DEF_STMT (gimple_assign_rhs2 (stmt))
+			     && is_a<gphi*> (SSA_NAME_DEF_STMT (
+						gimple_assign_rhs2 (stmt))))
+		      changed |= simplify_phi_result_op (stmt, code);
 		    break;
 		  }
 
