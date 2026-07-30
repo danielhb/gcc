@@ -5997,6 +5997,8 @@ pass_forwprop::execute (function *fun)
 		    else if (code == ARRAY_REF)
 		      changed |= simplify_count_zeroes (&gsi);
 		    else if (get_gimple_rhs_class (code) == GIMPLE_BINARY_RHS
+			     && TREE_CODE (
+				    gimple_assign_rhs2 (stmt)) == SSA_NAME
 			     && has_single_use (gimple_assign_rhs2 (stmt))
 			     && SSA_NAME_DEF_STMT (gimple_assign_rhs2 (stmt))
 			     && is_a<gphi*> (SSA_NAME_DEF_STMT (
