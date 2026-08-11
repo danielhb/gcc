@@ -70,6 +70,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "varasm.h"
 #include "internal-fn.h"
 #include "gimple-range.h"
+#include "pointer-query.h"
 
 enum strlen_range_kind {
   /* Compute the exact constant string length.  */
@@ -4118,10 +4119,12 @@ gimple_fold_builtin_printf (gimple_stmt_iterator *gsi, tree fmt,
 /* Fold a call to __builtin_strlen with known length LEN.  */
 
 static bool
-gimple_fold_builtin_strlen (gimple_stmt_iterator *gsi)
+gimple_fold_builtin_strlen (gimple_stmt_iterator *gsi, bool is_strnlen)
 {
   gimple *stmt = gsi_stmt (*gsi);
   tree arg = gimple_call_arg (stmt, 0);
+  unsigned prec = TYPE_PRECISION (sizetype);
+  wide_int max_size_len = wi::to_wide (max_object_size (), prec) - 2;
 
   wide_int minlen;
   wide_int maxlen;
@@ -4142,10 +4145,39 @@ gimple_fold_builtin_strlen (gimple_stmt_iterator *gsi)
     }
   else
     {
-      unsigned prec = TYPE_PRECISION (sizetype);
-
       minlen = wi::shwi (0, prec);
-      maxlen = wi::to_wide (max_object_size (), prec) - 2;
+      maxlen = max_size_len;
+    }
+
+  if (is_strnlen)
+    {
+      tree arg1 = gimple_call_arg (stmt, 1);
+
+      if (types_compatible_p (size_type_node, TREE_TYPE (arg1))
+	  && TREE_CODE (arg1) == INTEGER_CST)
+	{
+	  /* Check if maxlen is set to "max_obj_size - 2", which can
+	     mean that we're dealing with a non-null terminated string.
+	     In this case call compute_objsize to try to fetch the
+	     source size directly, if possible.  */
+	  if (maxlen == max_size_len)
+	    {
+	      access_ref aref;
+	      pointer_query ptr_qry;
+	      tree destsize = compute_objsize (arg, stmt, 1, &aref, &ptr_qry);
+
+	      if (destsize)
+		/* ??? Does this objsize always includes the ptr size? For
+		   char a[] = "12345" destsize is 6, for
+		   char a[] = "1" destsize is 2.  We're subtracting 1
+		   considering this is true.  */
+		maxlen = wi::to_wide (destsize) - 1;
+	    }
+
+	  /* maxlen will be the shortest between strnlen 'len' and
+	     the calculated maxlen we came up with.  */
+	  maxlen = wi::umin (maxlen, wi::to_wide (arg1));
+	}
     }
 
   /* For -fsanitize=address, don't optimize the upper bound of the
@@ -5545,7 +5577,9 @@ gimple_fold_builtin (gimple_stmt_iterator *gsi)
     case BUILT_IN_STRNCAT_CHK:
       return gimple_fold_builtin_strncat_chk (gsi);
     case BUILT_IN_STRLEN:
-      return gimple_fold_builtin_strlen (gsi);
+      return gimple_fold_builtin_strlen (gsi, false);
+    case BUILT_IN_STRNLEN:
+      return gimple_fold_builtin_strlen (gsi, true);
     case BUILT_IN_STRCPY:
       return gimple_fold_builtin_strcpy (gsi,
 					 gimple_call_arg (stmt, 0),
