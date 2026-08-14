@@ -12,4 +12,4 @@ int g (int i)
   return __builtin_strnlen (i ? a : "", 4);
 }
 
-/* { dg-final { scan-tree-dump-times "strnlen" 0 "pre" } } */
+/* { dg-final { scan-tree-dump-times "strnlen " 0 "pre" } } */
