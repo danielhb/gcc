@@ -9230,7 +9230,100 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
  (simplify
   (op @3 (cond @0 @1 @2))
   (cond @0 (op!:type @3 @1) (op!:type @3 @2))))
-#endif
+
+(for cmp (eq ne)
+ (for shift (lshift rshift)
+
+  /* PR101179: turn (A % (CST shift zero_one)) EQ|NE 0 into:
+
+     (A & ((zero_one ? CST shift 1 : CST) - 1)) EQ|NE 0
+
+     I.e. convert MOD to BIT_AND and "shift zero_one" into
+     a ternary.  */
+  (simplify
+   (cmp (trunc_mod@3 @4
+		     (shift integer_pow2p@0 (convert zero_one_valued_p@1)))
+	integer_zerop@2)
+    (if (single_use (@3)
+	 && INTEGRAL_TYPE_P (TREE_TYPE (@0))
+	 && INTEGRAL_TYPE_P (TREE_TYPE (@4))
+	 && tree_int_cst_sgn (@0) > 0)
+     (cmp
+       (bit_and
+	  @4
+	  (minus (cond (ne @1 { build_zero_cst (TREE_TYPE (@1)); })
+		   (shift @0 { build_one_cst (TREE_TYPE (@0)); })
+		   @0)
+		 { build_one_cst (TREE_TYPE (@0)); }))
+       @2)))
+
+  /* PR101179: a variation from above using 'mult':
+
+     (A % (CST shift (CST2 * zero_one)) EQ|NE 0 ->
+     (A & ((zero_one ? CST shift CST2 : CST) + -1)) EQ|NE 0;  */
+  (simplify
+   (cmp (trunc_mod@3
+	   @5
+	   (shift integer_pow2p@0
+		  (mult:c INTEGER_CST@4 (convert zero_one_valued_p@1))))
+	integer_zerop@2)
+    (if (single_use (@3)
+	 && INTEGRAL_TYPE_P (TREE_TYPE (@0))
+	 && INTEGRAL_TYPE_P (TREE_TYPE (@5))
+	 && tree_int_cst_sgn (@0) > 0
+	 && tree_int_cst_sgn (@4) > 0)
+     (cmp
+       (bit_and
+	  @5
+	  (minus (cond (ne @1 { build_zero_cst (TREE_TYPE (@1)); })
+		   (shift @0 (mult @4 { build_one_cst (TREE_TYPE (@0)); }))
+		    @0)
+		 { build_one_cst (TREE_TYPE (@0)); }))
+       @2)))
+
+  /* PR101179: this is a generic "catch all" pattern that uses ranger
+     to determine if a given SSA_NAME can be assumed to be a pow2:
+
+     (A % POW2_SSA_NAME) EQ|NE 0 -> (A & (POW_SSA_NAME -1)) EQ|NE 0
+
+     This will not generate better code than re-creating the CSTs
+     but it will match more often than the specialized patterns
+     from above.  */
+ (simplify
+  (cmp (trunc_mod@3 @0 SSA_NAME@1) integer_zerop@2)
+   (if (single_use (@3)
+	&& INTEGRAL_TYPE_P (TREE_TYPE (@0))
+	&& INTEGRAL_TYPE_P (TREE_TYPE (@1)))
+    (with {
+       int_range_max vr;
+       bool pow2_range = true;
+
+       if (gimple_match_range_of_expr (vr, @1, @0)
+	   && !vr.varying_p ()
+	   && !vr.undefined_p ()
+	   && vr.nonnegative_p ()
+	   && vr.num_pairs () > 0)
+	 {
+	   for (unsigned int i = 0; i < vr.num_pairs (); i++)
+	     {
+	       wide_int lb = vr.lower_bound (i);
+	       wide_int ub = vr.upper_bound (i);
+
+	       if (wi::exact_log2 (lb) == -1
+		   || wi::exact_log2 (ub) == -1)
+		 {
+		   pow2_range = false;
+		   break;
+		 }
+	     }
+	 }
+       else
+	 pow2_range = false; }
+     (if (pow2_range)
+      (cmp
+       (bit_and @0 (minus @1 { build_one_cst (TREE_TYPE (@1)); }))
+       @2)))))))
+#endif  /* if GIMPLE;  */
 
 /* Transform comparisons of the form (X & Y) CMP 0 to X CMP2 Z
    where ~Y + 1 == pow2 and Z = ~Y.  */
