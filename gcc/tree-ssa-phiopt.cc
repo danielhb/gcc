@@ -1363,6 +1363,120 @@ comparison_combine (basic_block cond_bb, basic_block middle_bb,
   return true;
 }
 
+static bool
+realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
+			 edge e1, edge e2,
+			 gphi *phi, tree arg0, tree arg1)
+{
+  gimple_stmt_iterator gsi;
+  gimple *gcall_stmt;
+  use_operand_p use_p;
+
+  unsigned int phi_num_args = gimple_phi_num_args (phi);
+  if (phi_num_args != 2)
+    return false;
+
+  if (e1->src != cond_bb
+      && e2->src != cond_bb)
+    return false;
+
+  if (single_pred (middle_bb) != cond_bb)
+    return false;
+
+  tree phi_res = gimple_phi_result (phi);
+
+  if (!single_imm_use (phi_res, &use_p, &gcall_stmt)
+      || gimple_code (gcall_stmt) != GIMPLE_CALL
+      || gimple_call_fndecl (gcall_stmt) != NULL_TREE
+      || gimple_call_fn (gcall_stmt) != phi_res
+      || gimple_call_lhs (gcall_stmt) == NULL_TREE)
+    return false;
+
+  gsi = gsi_after_labels (phi->bb);
+  if (gsi_stmt (gsi) != gcall_stmt)
+    return false;
+
+  if (TREE_CODE (arg0) != ADDR_EXPR
+      || TREE_CODE (TREE_OPERAND (arg0, 0)) != FUNCTION_DECL
+      || TREE_CODE (arg1) != ADDR_EXPR
+      || TREE_CODE (TREE_OPERAND (arg1, 0)) != FUNCTION_DECL)
+    return false;
+
+  tree gcall_ret_type = TREE_TYPE (gimple_call_lhs (gcall_stmt));
+  tree new_phires = make_ssa_name (gcall_ret_type);
+  gphi *new_phi = create_phi_node (new_phires, phi->bb);
+
+  basic_block new_bb = NULL;
+  edge new_e1 = e1;
+  edge new_e2 = e2;
+
+  new_bb = create_empty_bb (cond_bb);
+  add_bb_to_loop (new_bb, middle_bb->loop_father);
+
+  free_dominance_info (CDI_DOMINATORS);
+
+  if (e1->src == cond_bb)
+    {
+      redirect_edge_succ (e1, new_bb);
+      new_e1 = make_edge (new_bb, phi->bb, EDGE_FALLTHRU | EDGE_EXECUTABLE);
+    }
+  else
+    {
+      redirect_edge_succ (e2, new_bb);
+      new_e2 = make_edge (new_bb, phi->bb, EDGE_FALLTHRU | EDGE_EXECUTABLE);
+    }
+
+  gcall *new_gcall_1 = gimple_build_call (arg0, gimple_call_num_args (gcall_stmt));
+  tree new_gcall_ret_1 = make_ssa_name (gcall_ret_type);
+  gimple_call_set_lhs (new_gcall_1, new_gcall_ret_1);
+
+  gcall *new_gcall_2 = gimple_build_call (arg1, gimple_call_num_args (gcall_stmt));
+  tree new_gcall_ret_2 = make_ssa_name (gcall_ret_type);
+  gimple_call_set_lhs (new_gcall_2, new_gcall_ret_2);
+
+  for (unsigned i = 0; i < gimple_call_num_args (gcall_stmt); ++i)
+    {
+      gimple_call_set_arg (new_gcall_1, i, gimple_call_arg (gcall_stmt, i));
+      gimple_call_set_arg (new_gcall_2, i, gimple_call_arg (gcall_stmt, i));
+
+    }
+
+  gsi = gsi_last_bb (new_e1->src);
+  gsi_insert_before (&gsi, new_gcall_1, GSI_CONTINUE_LINKING);
+  update_stmt (new_gcall_1);
+
+  add_phi_arg (new_phi, new_gcall_ret_1, new_e1, gimple_location (new_gcall_1));
+
+  gsi = gsi_last_bb (new_e2->src);
+  gsi_insert_before (&gsi, new_gcall_2, GSI_CONTINUE_LINKING);
+  update_stmt (new_gcall_2);
+
+  add_phi_arg (new_phi, new_gcall_ret_2, new_e2, gimple_location (new_gcall_2));
+
+  gimple *stmt;
+  imm_use_iterator iter;
+  FOR_EACH_IMM_USE_STMT (stmt, iter, gimple_call_lhs (gcall_stmt))
+    {
+      FOR_EACH_IMM_USE_ON_STMT (use_p, iter)
+	{
+	  SET_USE (use_p, new_phires);
+	}
+      /* remove any vuse from the old gcall LHS */
+      if (gimple_vuse (stmt))
+	gimple_set_vuse (stmt, NULL_TREE);
+
+      update_stmt (stmt);
+    }
+
+  gsi = gsi_for_stmt (gcall_stmt);
+  gsi_remove (&gsi, true);
+
+  gsi = gsi_for_phi (phi);
+  remove_phi_node (&gsi, true);
+
+  return true;
+}
+
 /* Update *ARG which is defined in STMT so that it contains the
    computed value if that seems profitable.  Return true if the
    statement is made dead by that rewriting.  */
@@ -5059,6 +5173,12 @@ pass_phiopt::execute (function *)
 	       && !diamond_p
 	       && spaceship_replacement (bb, bb1, e1, e2, phi, arg0, arg1))
 	cfgchanged = true;
+      else if (single_pred_p (bb1)
+	       && !diamond_p
+	       && empty_block_p (bb1)
+	       && realize_direct_fn_calls (bb, bb1, e1, e2, phi,
+					   arg0, arg1))
+	cfgchanged = true;
     };
 
   execute_over_cond_phis (phiopt_exec);
@@ -5070,7 +5190,7 @@ pass_phiopt::execute (function *)
     }
 
   if (cfgchanged)
-    return TODO_cleanup_cfg;
+    return TODO_cleanup_cfg | TODO_update_ssa;
   return 0;
 }
 
