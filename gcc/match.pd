@@ -13279,6 +13279,20 @@ and,
       && !TYPE_OVERFLOW_SANITIZED (TREE_TYPE (@0)))
   (convert @0)))
 
+/* PR126523: (SIGNED (~(UNSIGNED signed_var))) -> ~signed_var.  */
+(simplify
+ (convert (bit_not (convert@1 @0)))
+ (if (INTEGRAL_TYPE_P (type)
+      && !TYPE_UNSIGNED (type)
+      && TREE_TYPE (@0) == type
+      && TYPE_UNSIGNED (TREE_TYPE (@1))
+      /* Check single_use since we're getting rid of @1.  */
+      && single_use (@1)
+      /* The unsigned convert cannot have less bits
+	 than the signed result.  */
+      && TYPE_PRECISION (TREE_TYPE (@1)) >= TYPE_PRECISION (type))
+  (bit_not @0)))
+
 /* Optimize
    c1 = VEC_PERM_EXPR (a, a, mask)
    c2 = VEC_PERM_EXPR (b, b, mask)
