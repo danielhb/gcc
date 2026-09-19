@@ -61,4 +61,3 @@ f5 (void)
 }
 
 /* { dg-final { scan-tree-dump {can narrow to signed:17 without loss [^\n]+= -} "vect" } } */
-/* { dg-final { scan-tree-dump {can narrow to signed:16 without loss [^\n]+= ~} "vect" } } */

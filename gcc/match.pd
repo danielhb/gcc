@@ -13384,6 +13384,50 @@ and,
       && !TYPE_OVERFLOW_SANITIZED (TREE_TYPE (@0)))
   (convert @0)))
 
+/* PR126523: (convert (~(convert A)));  */
+(simplify
+ (convert (bit_not@2 (convert@1 @0)))
+  (if (INTEGRAL_TYPE_P (type)
+       && INTEGRAL_TYPE_P (TREE_TYPE (@0))
+       && INTEGRAL_TYPE_P (TREE_TYPE (@1))
+       && single_use (@1)
+       && single_use (@2)
+       && TYPE_SIGN (type) == TYPE_SIGN (TREE_TYPE (@0)))
+   (with {
+     tree orig_type = TREE_TYPE (@0);
+     tree inner_type = TREE_TYPE (@1);
+     unsigned orig_prec = TYPE_PRECISION (orig_type);
+     unsigned inner_prec = TYPE_PRECISION (inner_type);
+     unsigned outer_prec = TYPE_PRECISION (type);
+    }
+    /* We can't simplify the following cases:
+
+       - an inner widening followed by an outer widening.  The
+	 inner widening add bits that won't be eliminated by
+	 the outer cast, i.e. (convert (bit_not A)) will have
+	 less original A bits;
+
+       - an inner narrowing that is shorter than the outer
+	 convert.  Bits from A will be chopped from the end
+	 result and (convert (bit_not A)) will end up having
+	 more original A bits.  */
+    (if (!(inner_prec > orig_prec
+	   && outer_prec > orig_prec)
+	 && !(inner_prec < orig_prec
+	      && inner_prec < outer_prec))
+
+     /* Simplify these to (bit_not (convert:type A)) where 'type' is
+	either the same prec or a narrowing type.  */
+     (if (outer_prec <= orig_prec)
+      (bit_not (convert @0))
+
+       /* For widening converts we must be sure that we don't have a
+	  sign change in the middle.  Otherwise this simplification
+	  will be different than the original due to sign/zero extension
+	  bits from the widening affecting the result.  */
+      (if (TYPE_SIGN (inner_type) == TYPE_SIGN (orig_type))
+       (convert (bit_not @0))))))))
+
 /* Optimize
    c1 = VEC_PERM_EXPR (a, a, mask)
    c2 = VEC_PERM_EXPR (b, b, mask)

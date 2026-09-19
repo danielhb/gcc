@@ -11,9 +11,11 @@
 **	testl	%edi, %edi
 **	je	.L3
 **	movl	%edi, %eax
+**	incl	%edi
+**	notl	%edi
+**	negl	%eax
 **	andl	\$1, %edi
 **	negl	%edi
-**	negl	%eax
 **	andl	%esi, %edi
 **	xorb	%dil, a\(%rip\)
 **	ret
