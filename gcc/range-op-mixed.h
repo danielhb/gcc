@@ -576,6 +576,7 @@ public:
   using range_operator::lhs_op1_relation;
   using range_operator::lhs_op2_relation;
   using range_operator::update_bitmask;
+  using range_operator::op1_op2_relation_effect;
   bool op1_range (irange &r, tree type,
 		  const irange &lhs, const irange &op2,
 		  relation_trio) const final override;
@@ -598,6 +599,10 @@ public:
 				  relation_kind rel) const final override;
   void update_bitmask (irange &r, const irange &lh,
 		       const irange &rh) const final override;
+  bool op1_op2_relation_effect (irange &lhs_range, tree type,
+				const irange &op1_range,
+				const irange &op2_range,
+				relation_kind rel) const final override;
 
   bool overflow_free_p (const irange &lh, const irange &rh,
 			relation_trio = TRIO_VARYING) const final override;

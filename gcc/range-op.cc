@@ -5073,6 +5073,48 @@ operator_plus::overflow_free_p (const irange &lh, const irange &rh,
 }
 
 bool
+operator_plus::op1_op2_relation_effect (irange &lhs_range, tree type,
+					const irange &, const irange &,
+					relation_kind rel) const
+{
+  if (rel == VREL_VARYING)
+    return false;
+
+  const unsigned int prec = TYPE_PRECISION (type);
+
+  if (rel == VREL_EQ)
+    {
+      /* The assumptions below aren't valid for booleans.  */
+      if (prec == 1)
+	return false;
+
+      /* If op1 = op2 we know that the result will have bit zero
+	 cleared regardless of sign and overflows.  Update the
+	 irange_bitmask to inform that bit 0 is known to be
+	 zero.
+
+	 A known bit is represented by a cleared value in 'mask'.
+	 The value of known bits are represented in 'value',
+	 hence clear bit 0 in both 'value' and 'mask'.  See
+	 "class irange_bitmask" in value-range.h for more info.  */
+
+      irange_bitmask curr_bitmask = lhs_range.get_bitmask ();
+      wide_int value = curr_bitmask.value ();
+      wide_int mask = curr_bitmask.mask ();
+
+      value = wi::bit_and_not (value, wi::one (prec));
+      mask = wi::bit_and_not (mask, wi::one (prec));
+
+      irange_bitmask new_bitmask (value, mask);
+      lhs_range.update_bitmask (new_bitmask);
+
+      return true;
+    }
+
+  return false;
+}
+
+bool
 operator_minus::overflow_free_p (const irange &lh, const irange &rh,
 				 relation_trio) const
 {
