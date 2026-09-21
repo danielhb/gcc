@@ -1538,6 +1538,20 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
             { wide_int_to_tree (type,
 				wi::lshift (wone, wi::to_wide (@2))); }))))
 
+/* PR126644: A << CST >> CST -> A
+   As long as the upper CST bits of A are known zero.  */
+(simplify
+ (rshift (lshift @0 INTEGER_CST@1) INTEGER_CST@1)
+  (if (INTEGRAL_TYPE_P (type)
+       && tree_fits_uhwi_p (@1)
+       && tree_to_uhwi (@1) < TYPE_PRECISION (type))
+   (with { unsigned int precision = TYPE_PRECISION (type);
+	   wide_int mask = wi::mask (precision - tree_to_uhwi (@1),
+				     true,
+				     precision); }
+    (if ((tree_nonzero_bits (@0) & mask) == 0)
+     @0))))
+
 /* Fold (-x >> C) into -(x > 0) where C = precision(type) - 1.  */
 (for cst (INTEGER_CST VECTOR_CST)
  (simplify
