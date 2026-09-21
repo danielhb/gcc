@@ -1561,6 +1561,64 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
             { wide_int_to_tree (type,
 				wi::lshift (wone, wi::to_wide (@2))); }))))
 
+#if GIMPLE
+/* PR126644: A << N >> N -> A
+   As long as the upper CST bits of A are known to be zero.  */
+(simplify
+ (rshift (lshift@0 @A INTEGER_CST@N) @N)
+  (if (INTEGRAL_TYPE_P (type)
+       && tree_fits_uhwi_p (@N)
+       && tree_to_uhwi (@N) < TYPE_PRECISION (type)
+       && single_use (@0))
+   (switch
+    /* For unsigned types it's a matter of checking if we'll
+       lose any of the upper N bits during A << N.  */
+    (if (TYPE_UNSIGNED (type))
+     (with {
+	unsigned int prec = TYPE_PRECISION (type);
+	wide_int mask = wi::mask (prec - tree_to_uhwi (@N),
+				  true, prec);
+      }
+      (if ((tree_nonzero_bits (@A) & mask) == 0)
+       @A)))
+
+    /* For signed types we need to preserve the existing sign bit for
+       all possible values A might have.  Otherwise we can have an
+       originally positive A (no sign bit), A << N ends up setting
+       the sign bit (i.e. it's a negative number now) and now
+       (A << N) >> N becomes an arithmetic shift that will preserve
+       the sign bit.  */
+    (if (!TYPE_UNSIGNED (type))
+     (with {
+	bool no_sign_bit_change = true;
+	int_range_max vr;
+
+	if (gimple_match_range_of_expr (vr, @A)
+	    && !vr.varying_p ()
+	    && !vr.undefined_p ()
+	    && vr.num_pairs () > 0)
+	  {
+	    int shift_amount = tree_to_uhwi (@N);
+	    for (unsigned int i = 0; i < vr.num_pairs (); i++)
+	      {
+		wide_int lb = vr.lower_bound (i);
+		wide_int ub = vr.upper_bound (i);
+
+		if (wi::clrsb (lb) < shift_amount
+		    || wi::clrsb (ub) < shift_amount)
+		  {
+		    no_sign_bit_change = false;
+		    break;
+		  }
+	      }
+	  }
+	else
+	  no_sign_bit_change = false;
+      }
+      (if (no_sign_bit_change)
+       @A))))))
+#endif
+
 /* Fold (-x >> C) into -(x > 0) where C = precision(type) - 1.  */
 (for cst (INTEGER_CST VECTOR_CST)
  (simplify
