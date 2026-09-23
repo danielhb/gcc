@@ -13279,19 +13279,30 @@ and,
       && !TYPE_OVERFLOW_SANITIZED (TREE_TYPE (@0)))
   (convert @0)))
 
-/* PR126523: (SIGNED (~(UNSIGNED signed_var))) -> ~signed_var.  */
+/* PR126523: (convert (~(convert@1 A))) -> (convert? (bit_not A));  */
 (simplify
  (convert (bit_not (convert@1 @0)))
- (if (INTEGRAL_TYPE_P (type)
-      && !TYPE_UNSIGNED (type)
-      && TREE_TYPE (@0) == type
-      && TYPE_UNSIGNED (TREE_TYPE (@1))
-      /* Check single_use since we're getting rid of @1.  */
-      && single_use (@1)
-      /* The unsigned convert cannot have less bits
-	 than the signed result.  */
-      && TYPE_PRECISION (TREE_TYPE (@1)) >= TYPE_PRECISION (type))
-  (bit_not @0)))
+  (if (INTEGRAL_TYPE_P (type))
+   (with {
+     tree orig_type = TREE_TYPE (@0);
+     tree inner_type = TREE_TYPE (@1);
+     unsigned orig_prec = TYPE_PRECISION (orig_type);
+     unsigned inner_prec = TYPE_PRECISION (inner_type);
+     unsigned outer_prec = TYPE_PRECISION (type);
+     bool trunc_pattern = false;
+
+     if (inner_prec < orig_prec
+	 || outer_prec < orig_prec)
+       trunc_pattern = true;
+    }
+    (if (!(TYPE_UNSIGNED (orig_type)
+	   && inner_prec > orig_prec
+	   && outer_prec > orig_prec))
+     (if (trunc_pattern && inner_prec < outer_prec)
+      (convert:inner_type (bit_not @0))
+      (if (trunc_pattern && outer_prec < inner_prec)
+       (convert (bit_not @0))
+     (bit_not @0)))))))
 
 /* Optimize
    c1 = VEC_PERM_EXPR (a, a, mask)
