@@ -17,10 +17,27 @@ si f1(si a)
     return ~a;
 }
 
-/* If everything went as planned g()
-   will reduce to 'return 1'.  */
 int g(si a)
 {
     return f(a) + f1(a) == (si)(2*(~a));
 }
-/* { dg-final { scan-tree-dump-times " return 1;" 1 "optimized" } } */
+
+ui f3(ui a)
+{
+    si t = a;
+    t = ~t;
+    ui a1 = t;
+    return a1;
+}
+
+ui f4(ui a)
+{
+    return ~a;
+}
+
+ui g2(ui a)
+{
+    return f3(a) == f4(a);
+}
+
+/* { dg-final { scan-tree-dump-times " return 1;" 2 "optimized" } } */
