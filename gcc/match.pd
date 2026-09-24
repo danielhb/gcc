@@ -13301,6 +13301,7 @@ and,
 	   && inner_prec > orig_prec
 	   && outer_prec > orig_prec)
 	 && tree_nop_conversion_p (orig_type, inner_type)
+	 && tree_nop_conversion_p (type, inner_type)
 	 && (!trunc_pattern
 	     || (inner_prec > outer_prec)))
      (convert (bit_not @0))))))
