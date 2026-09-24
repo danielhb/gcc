@@ -13300,7 +13300,9 @@ and,
     (if (!(TYPE_UNSIGNED (orig_type)
 	   && inner_prec > orig_prec
 	   && outer_prec > orig_prec))
-     (if (trunc_pattern && inner_prec < outer_prec)
+     (if (trunc_pattern
+	  && inner_prec < outer_prec
+	  && tree_nop_conversion_p (orig_type, type))
       (convert:inner_type (bit_not @0))
      (convert (bit_not @0)))))))
 
