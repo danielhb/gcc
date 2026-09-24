@@ -13281,8 +13281,10 @@ and,
 
 /* PR126523: (convert (~(convert@1 A))) -> (convert? (bit_not A));  */
 (simplify
- (convert (bit_not (convert@1 @0)))
-  (if (INTEGRAL_TYPE_P (type))
+ (convert (bit_not@2 (convert@1 @0)))
+  (if (INTEGRAL_TYPE_P (type)
+       && single_use (@1)
+       && single_use (@2))
    (with {
      tree orig_type = TREE_TYPE (@0);
      tree inner_type = TREE_TYPE (@1);
@@ -13300,9 +13302,7 @@ and,
 	   && outer_prec > orig_prec))
      (if (trunc_pattern && inner_prec < outer_prec)
       (convert:inner_type (bit_not @0))
-      (if (trunc_pattern && outer_prec < inner_prec)
-       (convert (bit_not @0))
-     (bit_not @0)))))))
+     (convert (bit_not @0)))))))
 
 /* Optimize
    c1 = VEC_PERM_EXPR (a, a, mask)
