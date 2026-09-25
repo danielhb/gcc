@@ -13297,14 +13297,24 @@ and,
 	 || outer_prec < orig_prec)
        trunc_pattern = true;
     }
-    (if (!(TYPE_UNSIGNED (orig_type)
-	   && inner_prec > orig_prec
-	   && outer_prec > orig_prec)
-	 && tree_nop_conversion_p (orig_type, inner_type)
-	 && tree_nop_conversion_p (type, inner_type)
-	 && (!trunc_pattern
-	     || (inner_prec > outer_prec)))
-     (convert (bit_not @0))))))
+    /* There are no double widening patterns that can be reduced.  */
+    (if (!(inner_prec > orig_prec && outer_prec > orig_prec))
+
+     /* Inner convert is widening or they are all the same
+        precision.  If it's the latter we'll end up removing
+	all casts.  */
+     (if (!trunc_pattern && outer_prec <= inner_prec)
+      (convert (bit_not @0))
+
+      /* Prioritize truncating outer converts.  */
+      (if (trunc_pattern && outer_prec <= inner_prec)
+       (convert (bit_not @0))
+
+       /* Inner convert trunc -> trunc 'A' before the bit_not
+          and let the following logic decide if we can remove
+	  the inner cast (?????).  */
+       (if (trunc_pattern && inner_prec < outer_prec)
+	(convert:inner_type (bit_not @0)))))))))
 
 /* Optimize
    c1 = VEC_PERM_EXPR (a, a, mask)
