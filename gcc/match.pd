@@ -13283,6 +13283,8 @@ and,
 (simplify
  (convert (bit_not@2 (convert@1 @0)))
   (if (INTEGRAL_TYPE_P (type)
+       && INTEGRAL_TYPE_P (TREE_TYPE (@0))
+       && INTEGRAL_TYPE_P (TREE_TYPE (@1))
        && single_use (@1)
        && single_use (@2))
    (with {
@@ -13300,12 +13302,14 @@ and,
 	Keep the outer convert and if the rest of the logic
 	decides it's a nop it'll disappear.  */
      (if (inner_prec == orig_prec
-	  && outer_prec == orig_prec)
+	  && outer_prec == orig_prec
+	  && tree_nop_conversion_p (inner_type, type))
       (convert (bit_not @0))
 
        /* If the inner convert is wider than the outer we can get
 	  rid of it and use the outer convert only.  */
-	(if (inner_prec > outer_prec)
+	(if (inner_prec > outer_prec
+	     && tree_nop_conversion_p (inner_type, type))
 	 (convert (bit_not @0))
 
 	 /* An inner convert that is shorter than the outer can
