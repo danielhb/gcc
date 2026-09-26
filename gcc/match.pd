@@ -13297,25 +13297,25 @@ and,
     /* There are no double widening patterns that can be reduced.  */
     (if (!(inner_prec > orig_prec && outer_prec > orig_prec))
 
-     /* In theory all converts would be gone but there are cases
-        where the left-most capture needs to be a specific sign.
-	Keep the outer convert and if the rest of the logic
-	decides it's a nop it'll disappear.  */
-     (if (inner_prec == orig_prec
-	  && outer_prec == orig_prec
-	  && tree_nop_conversion_p (inner_type, type))
+     /* This cover cases where everything has the same precision
+        (it most likely will end up removing all casts) or they're
+	both equally truncating (outer cast will be kept).  */
+     (if (inner_prec == outer_prec)
       (convert (bit_not @0))
 
-       /* If the inner convert is wider than the outer we can get
-	  rid of it and use the outer convert only.  */
-	(if (inner_prec > outer_prec
-	     && tree_nop_conversion_p (inner_type, type))
-	 (convert (bit_not @0))
+       /* There's no safe way via match.pd to handle the case
+          where we might have a truncation in the inner convert,
+	  and be able to remove the outer cast, e.g.:
 
-	 /* An inner convert that is shorter than the outer can
-	    be reduced to use the inner convert only.  */
-	  (if (inner_prec < outer_prec)
-	   (convert:inner_type (bit_not @0)))))))))
+	  (int32(~(int16 int32A)) -> (int16 (~int32A)
+
+	  Because we don't know if outer is needed.  Bootstrap
+	  will consitently fail, showing that we won't be able
+	  to re-cast (convert:type) if needed all the time.
+
+	  For all other cases we can remove the inner_convert.  */
+	(if (!(inner_prec < orig_prec && inner_prec < outer_prec))
+	 (convert (bit_not @0))))))))
 
 /* Optimize
    c1 = VEC_PERM_EXPR (a, a, mask)
