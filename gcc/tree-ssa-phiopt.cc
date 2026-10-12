@@ -1438,20 +1438,54 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
     {
       gimple_call_set_arg (new_gcall_1, i, gimple_call_arg (gcall_stmt, i));
       gimple_call_set_arg (new_gcall_2, i, gimple_call_arg (gcall_stmt, i));
-
     }
 
   gsi = gsi_last_bb (new_e1->src);
   gsi_insert_before (&gsi, new_gcall_1, GSI_CONTINUE_LINKING);
-  update_stmt (new_gcall_1);
 
   add_phi_arg (new_phi, new_gcall_ret_1, new_e1, gimple_location (new_gcall_1));
 
   gsi = gsi_last_bb (new_e2->src);
   gsi_insert_before (&gsi, new_gcall_2, GSI_CONTINUE_LINKING);
-  update_stmt (new_gcall_2);
 
   add_phi_arg (new_phi, new_gcall_ret_2, new_e2, gimple_location (new_gcall_2));
+
+  if (gimple_vdef (gcall_stmt))
+    {
+      /* We'll have to create vdefs for each new call site we're
+	 adding.  The idea is to re-use existing vops to avoid the
+	 hassle of renaming old references.
+
+	 Therefore, if we have something like this in the merge
+	 block:
+
+	 # .MEM_7 = VDEF <.MEM_6>
+	 # USE = nonlocal escaped
+	 # CLB = nonlocal escaped
+	 _8 = iftmp.0_2 ();
+
+	 - We want to create a vphi that uses the same vdef:
+	   # .MEM_7 = PHI <...>
+
+	 - Each call site must use the same vuse (.MEM_6) for their
+	   vdefs.  */
+      gphi *vphi = create_phi_node (gimple_vdef (gcall_stmt), phi->bb);
+  
+      /* vdefs for each new gcall uses the same vuse from gcall_stmt.  */
+      tree vdef1 = make_ssa_name (gimple_vop (cfun));
+      gimple_set_vdef (new_gcall_1, vdef1);
+      gimple_set_vuse (new_gcall_1, gimple_vuse (gcall_stmt));
+
+      tree vdef2 = make_ssa_name (gimple_vop (cfun));
+      gimple_set_vdef (new_gcall_2, vdef2);
+      gimple_set_vuse (new_gcall_2, gimple_vuse (gcall_stmt));
+
+      add_phi_arg (vphi, vdef1, new_e1, gimple_location (new_gcall_1));
+      add_phi_arg (vphi, vdef2, new_e2, gimple_location (new_gcall_2));
+    }
+
+  update_stmt (new_gcall_1);
+  update_stmt (new_gcall_2);
 
   gimple *stmt;
   imm_use_iterator iter;
@@ -1461,9 +1495,9 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
 	{
 	  SET_USE (use_p, new_phires);
 	}
-      /* remove any vuse from the old gcall LHS */
-      if (gimple_vuse (stmt))
-	gimple_set_vuse (stmt, NULL_TREE);
+      ///* remove any vuse from the old gcall LHS */
+        // if (gimple_vuse (stmt))
+	  // gimple_set_vuse (stmt, gimple_phi_result (vphi));
 
       update_stmt (stmt);
     }
