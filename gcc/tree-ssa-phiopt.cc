@@ -1468,11 +1468,13 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
     {
       redirect_edge_succ (e1, new_bb);
       new_e1 = make_edge (new_bb, phi->bb, EDGE_FALLTHRU | EDGE_EXECUTABLE);
+      new_e1->probability = profile_probability::always ();
     }
   else
     {
       redirect_edge_succ (e2, new_bb);
       new_e2 = make_edge (new_bb, phi->bb, EDGE_FALLTHRU | EDGE_EXECUTABLE);
+      new_e2->probability = profile_probability::always ();
     }
 
   gcall *new_gcall_1 = gimple_build_call (arg0, gimple_call_num_args (gcall_stmt));
