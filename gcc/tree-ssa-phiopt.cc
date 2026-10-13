@@ -1438,7 +1438,9 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
       || gimple_code (gcall_stmt) != GIMPLE_CALL
       || gimple_call_fndecl (gcall_stmt) != NULL_TREE
       || gimple_call_fn (gcall_stmt) != phi_res
-      || gimple_call_lhs (gcall_stmt) == NULL_TREE)
+      || gimple_call_lhs (gcall_stmt) == NULL_TREE
+          || lookup_stmt_eh_lp (gcall_stmt) > 0
+      || stmt_can_throw_internal (cfun, gcall_stmt) )
     return false;
 
   gsi = gsi_after_labels (phi->bb);
@@ -1499,12 +1501,12 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
   gimple_call_set_lhs (new_gcall_1, new_gcall_ret_1);
   gimple_call_set_fn (new_gcall_1, arg0);
 
-
   gcall *new_gcall_2 = as_a <gcall *> (gimple_copy (gcall_stmt));
   tree new_gcall_ret_2 = make_ssa_name (gcall_ret_type);
   gimple_call_set_lhs (new_gcall_2, new_gcall_ret_2);
   gimple_call_set_fn (new_gcall_2, arg1);
 
+#if 0
   if (gimple_vuse (gcall_stmt))
     {
       gimple_set_vuse (new_gcall_1, NULL_TREE);
@@ -1518,7 +1520,7 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
     }
 
 
-// #endif
+#endif
 
   gsi = gsi_last_bb (new_e1->src);
   gsi_insert_before (&gsi, new_gcall_1, GSI_CONTINUE_LINKING);
@@ -1530,7 +1532,8 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
 
   add_phi_arg (new_phi, new_gcall_ret_2, new_e2, UNKNOWN_LOCATION);
 
-#if 0
+// #if 0
+  gphi *vphi = NULL;
   if (gimple_vdef (gcall_stmt))
     {
       /* We'll have to create vdefs for each new call site we're
@@ -1550,21 +1553,27 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
 
 	 - Each call site must use the same vuse (.MEM_6) for their
 	   vdefs.  */
-      //gphi *vphi = create_phi_node (gimple_vdef (gcall_stmt), phi->bb);
-  
+      vphi = create_phi_node (make_ssa_name (gimple_vop (cfun)), phi->bb);
+      // vphi = create_phi_node (NULL_TREE, phi->bb);
+      // gimple_phi_set_result (vphi, gimple_vdef (gcall_stmt));
+
       /* vdefs for each new gcall uses the same vuse from gcall_stmt.  */
       tree vdef1 = make_ssa_name (gimple_vop (cfun));
+      unlink_stmt_vdef (new_gcall_1);
       gimple_set_vdef (new_gcall_1, vdef1);
       gimple_set_vuse (new_gcall_1, gimple_vuse (gcall_stmt));
 
       tree vdef2 = make_ssa_name (gimple_vop (cfun));
+      unlink_stmt_vdef (new_gcall_2);
       gimple_set_vdef (new_gcall_2, vdef2);
       gimple_set_vuse (new_gcall_2, gimple_vuse (gcall_stmt));
 
-      //add_phi_arg (vphi, vdef1, new_e1, UNKNOWN_LOCATION);
-      //add_phi_arg (vphi, vdef2, new_e2, UNKNOWN_LOCATION);
+      add_phi_arg (vphi, vdef1, new_e1, UNKNOWN_LOCATION);
+      add_phi_arg (vphi, vdef2, new_e2, UNKNOWN_LOCATION);
+
+      update_stmt (vphi);
     }
-#endif
+// #endif
 
   update_stmt (new_gcall_1);
   update_stmt (new_gcall_2);
@@ -1580,14 +1589,23 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
 	  SET_USE (use_p, new_phires);
 	}
        /* remove any mem regs from the old gcall LHS */
-         if (gimple_vuse (stmt))
-	   gimple_set_vuse (stmt, NULL_TREE);
-	 if (gimple_vdef (stmt))
-           gimple_set_vdef (stmt, NULL_TREE);
+      if (gimple_vuse (stmt) && vphi != NULL)
+	gimple_set_vuse (stmt, gimple_phi_result (vphi));  
+      //if (gimple_vuse (stmt) && gimple_vuse (gcall_stmt))
+	//{
+	  //if (vphi != NULL)
+	   // gimple_set_vuse (stmt, gimple_phi_result (vphi));
+	  //else
+	   // gimple_set_vuse (stmt, gimple_vuse (gcall_stmt));
+
+	//}
+	 //if (gimple_vdef (stmt))
+           //gimple_set_vdef (stmt, NULL_TREE);
 
       update_stmt (stmt);
     }
 
+  unlink_stmt_vdef (gcall_stmt);
   gsi = gsi_for_stmt (gcall_stmt);
   gsi_remove (&gsi, true);
 
