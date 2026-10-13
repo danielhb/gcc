@@ -1439,7 +1439,7 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
       || gimple_call_fndecl (gcall_stmt) != NULL_TREE
       || gimple_call_fn (gcall_stmt) != phi_res
       || gimple_call_lhs (gcall_stmt) == NULL_TREE
-          || lookup_stmt_eh_lp (gcall_stmt) > 0
+      || lookup_stmt_eh_lp (gcall_stmt) > 0
       || stmt_can_throw_internal (cfun, gcall_stmt) )
     return false;
 
@@ -1462,7 +1462,9 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
   edge new_e2 = e2;
 
   new_bb = create_empty_bb (cond_bb);
-  add_bb_to_loop (new_bb, middle_bb->loop_father);
+
+  if (current_loops)
+    add_bb_to_loop (new_bb, cond_bb->loop_father);
 
   free_dominance_info (CDI_DOMINATORS);
 
@@ -1477,25 +1479,6 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
       new_e2 = make_edge (new_bb, phi->bb, EDGE_FALLTHRU | EDGE_EXECUTABLE);
     }
 
-
-#if 0  
-  gcall *new_gcall_1 = gimple_build_call (arg0, gimple_call_num_args (gcall_stmt));
-  tree new_gcall_ret_1 = make_ssa_name (gcall_ret_type);
-  gimple_call_set_lhs (new_gcall_1, new_gcall_ret_1);
-
-  gcall *new_gcall_2 = gimple_build_call (arg1, gimple_call_num_args (gcall_stmt));
-  tree new_gcall_ret_2 = make_ssa_name (gcall_ret_type);
-  gimple_call_set_lhs (new_gcall_2, new_gcall_ret_2);
-
-  for (unsigned i = 0; i < gimple_call_num_args (gcall_stmt); ++i)
-    {
-      gimple_call_set_arg (new_gcall_1, i, gimple_call_arg (gcall_stmt, i));
-      gimple_call_set_arg (new_gcall_2, i, gimple_call_arg (gcall_stmt, i));
-    }
-#endif
-
-// #if 0
-
   gcall *new_gcall_1 = as_a <gcall *> (gimple_copy (gcall_stmt));
   tree new_gcall_ret_1 = make_ssa_name (gcall_ret_type);
   gimple_call_set_lhs (new_gcall_1, new_gcall_ret_1);
@@ -1505,22 +1488,6 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
   tree new_gcall_ret_2 = make_ssa_name (gcall_ret_type);
   gimple_call_set_lhs (new_gcall_2, new_gcall_ret_2);
   gimple_call_set_fn (new_gcall_2, arg1);
-
-#if 0
-  if (gimple_vuse (gcall_stmt))
-    {
-      gimple_set_vuse (new_gcall_1, NULL_TREE);
-      gimple_set_vuse (new_gcall_2, NULL_TREE);
-    }
-
-  if (gimple_vdef (gcall_stmt))
-    {
-      gimple_set_vdef (new_gcall_1, NULL_TREE);
-      gimple_set_vdef (new_gcall_2, NULL_TREE);
-    }
-
-
-#endif
 
   gsi = gsi_last_bb (new_e1->src);
   gsi_insert_before (&gsi, new_gcall_1, GSI_CONTINUE_LINKING);
@@ -1532,30 +1499,10 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
 
   add_phi_arg (new_phi, new_gcall_ret_2, new_e2, UNKNOWN_LOCATION);
 
-// #if 0
   gphi *vphi = NULL;
   if (gimple_vdef (gcall_stmt))
     {
-      /* We'll have to create vdefs for each new call site we're
-	 adding.  The idea is to re-use existing vops to avoid the
-	 hassle of renaming old references.
-
-	 Therefore, if we have something like this in the merge
-	 block:
-
-	 # .MEM_7 = VDEF <.MEM_6>
-	 # USE = nonlocal escaped
-	 # CLB = nonlocal escaped
-	 _8 = iftmp.0_2 ();
-
-	 - We want to create a vphi that uses the same vdef:
-	   # .MEM_7 = PHI <...>
-
-	 - Each call site must use the same vuse (.MEM_6) for their
-	   vdefs.  */
       vphi = create_phi_node (make_ssa_name (gimple_vop (cfun)), phi->bb);
-      // vphi = create_phi_node (NULL_TREE, phi->bb);
-      // gimple_phi_set_result (vphi, gimple_vdef (gcall_stmt));
 
       /* vdefs for each new gcall uses the same vuse from gcall_stmt.  */
       tree vdef1 = make_ssa_name (gimple_vop (cfun));
@@ -1573,12 +1520,10 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
 
       update_stmt (vphi);
     }
-// #endif
 
   update_stmt (new_gcall_1);
   update_stmt (new_gcall_2);
-
-//  replace_uses_by (gimple_call_lhs (gcall_stmt), new_phires);
+  update_stmt (new_phi);
 
   gimple *stmt;
   imm_use_iterator iter;
@@ -1590,17 +1535,7 @@ realize_direct_fn_calls (basic_block cond_bb, basic_block middle_bb,
 	}
        /* remove any mem regs from the old gcall LHS */
       if (gimple_vuse (stmt) && vphi != NULL)
-	gimple_set_vuse (stmt, gimple_phi_result (vphi));  
-      //if (gimple_vuse (stmt) && gimple_vuse (gcall_stmt))
-	//{
-	  //if (vphi != NULL)
-	   // gimple_set_vuse (stmt, gimple_phi_result (vphi));
-	  //else
-	   // gimple_set_vuse (stmt, gimple_vuse (gcall_stmt));
-
-	//}
-	 //if (gimple_vdef (stmt))
-           //gimple_set_vdef (stmt, NULL_TREE);
+	gimple_set_vuse (stmt, gimple_phi_result (vphi));
 
       update_stmt (stmt);
     }
