@@ -13384,6 +13384,21 @@ and,
       && !TYPE_OVERFLOW_SANITIZED (TREE_TYPE (@0)))
   (convert @0)))
 
+/* PR117281 - (bit_op (trunc A) CST) -> (trunc (bit_op A CST))
+
+   'trunc' can also be a sign conversion for the same
+   precision since the type_sign won't affect the bit_op. */
+#if GIMPLE
+(for bit_op (bit_ior bit_xor bit_and)
+ (simplify
+  (bit_op:c (convert @A) INTEGER_CST@0)
+  (if (INTEGRAL_TYPE_P (type)
+       && INTEGRAL_TYPE_P (TREE_TYPE (@A))
+       && tree_fits_uhwi_p (@0))
+   (convert (bit_op @A { build_int_cst (TREE_TYPE (@A),
+					tree_to_uhwi (@0)); } )))))
+#endif
+
 /* Optimize
    c1 = VEC_PERM_EXPR (a, a, mask)
    c2 = VEC_PERM_EXPR (b, b, mask)
