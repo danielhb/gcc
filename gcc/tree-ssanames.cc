@@ -139,6 +139,29 @@ range_info_set_range (tree name, const vrange &r)
     }
 }
 
+/* Find an irange for tree 'name' by either returning
+   SSA_NAME_RANGE_INFO (name) or doing a range_query.
+   Returns TRUE if an irange was found, FALSE otherwise.  */
+
+static inline bool
+range_info_find_irange (const_tree name, vrange &vr)
+{
+  if (!irange::supports_p (TREE_TYPE (name)))
+    return false;
+
+ if (range_info_p (name))
+   {
+     range_info_get_range (name, vr);
+     return true;
+   }
+
+  if (!get_range_query (cfun)->range_of_expr (vr, const_cast <tree> (name)))
+    return false;
+
+  return true;
+}
+
+
 /* Initialize management of SSA_NAMEs to default SIZE.  If SIZE is
    zero use default.  */
 
@@ -534,11 +557,10 @@ get_nonzero_bits_1 (const_tree name)
       return wi::shwi (-1, precision);
     }
 
-  if (!range_info_p (name) || !irange::supports_p (TREE_TYPE (name)))
+  int_range_max tmp;
+  if (!range_info_find_irange (name, tmp))
     return wi::shwi (-1, precision);
 
-  int_range_max tmp;
-  range_info_get_range (name, tmp);
   return tmp.get_nonzero_bits ();
 }
 
@@ -582,13 +604,11 @@ get_known_nonzero_bits_1 (const_tree name)
   if (TREE_CODE (name) != SSA_NAME || POINTER_TYPE_P (TREE_TYPE (name)))
     return wi::shwi (0, precision);
 
-  if (!range_info_p (name) || !irange::supports_p (TREE_TYPE (name)))
+  int_range_max tmp;
+  if (!range_info_find_irange (name, tmp)
+      || tmp.undefined_p ())
     return wi::shwi (0, precision);
 
-  int_range_max tmp;
-  range_info_get_range (name, tmp);
-  if (tmp.undefined_p ())
-    return wi::shwi (0, precision);
   irange_bitmask bm = tmp.get_bitmask ();
   return wi::bit_and_not (bm.value (), bm.mask ());
 }
