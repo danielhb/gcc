@@ -4937,6 +4937,168 @@ simplify_phi_result_movdiv (gimple *stmt, tree_code code)
   return true;
 }
 
+/* PR115547: given the following IOR sequence where all
+   trees involved are bools/zero_one_valued:
+
+  ;;   basic block 2
+  ;;    prev block 0
+  if (a_4 != b_5)
+    goto <bb 3>;
+  else
+    goto <bb 4>;
+
+  ;;   basic block 3
+  ;;    prev block 2
+  ;;    pred:       2 (TRUE_VALUE,EXECUTABLE)
+  _1 = b_5 | c_6;
+  _2 = _1 | a_4;
+
+  I.e. (a_4 != b_5) && b_5 | c_6 | a_4;
+
+  We want to make it easier to deduce the relationship
+  a_4 != b_5 in the IOR chain by re-ordering the IORs
+  operands, putting a_4 and b_5 in the first IOR:
+
+  _1 = b_5 | a_4;
+  _2 = _1 | c_6;
+
+  Our expectation is that the IOR chain collapses into "1".  Note
+  that even with a EQ code there's still benefit from reordering
+  the IOR chain - we can have one less IOR in the sequence.  */
+static bool
+reorder_ior_chain (gimple *first_ior)
+{
+  tree first_ior_rhs1 = gimple_assign_rhs1 (first_ior);
+  tree first_ior_rhs2 = gimple_assign_rhs2 (first_ior);
+
+  if (TREE_CODE (first_ior_rhs1) != SSA_NAME
+      || !tree_zero_one_valued_p (first_ior_rhs1)
+      || TREE_CODE (first_ior_rhs2) != SSA_NAME
+      || !tree_zero_one_valued_p (first_ior_rhs2))
+    return false;
+
+  basic_block middle_bb = gimple_bb (first_ior);
+  gimple_stmt_iterator gsi = gsi_start_nondebug_after_labels_bb (middle_bb);
+
+  /* first_ior must be the first insn of the bb.  The
+     next insn must also be an IOR.  */
+  if (gsi_end_p (gsi)
+      || gsi_stmt (gsi) != first_ior)
+    return false;
+
+  gsi_next (&gsi);
+  gimple *second_ior = gsi_stmt (gsi);
+
+  if (!second_ior
+      || gimple_code (second_ior) != GIMPLE_ASSIGN
+      || gimple_assign_rhs_code (second_ior) != BIT_IOR_EXPR)
+    return false;
+
+  tree second_ior_rhs1 = gimple_assign_rhs1 (second_ior);
+  tree second_ior_rhs2 = gimple_assign_rhs2 (second_ior);
+
+  if (TREE_CODE (second_ior_rhs1) != SSA_NAME
+      || !tree_zero_one_valued_p (second_ior_rhs1)
+      || TREE_CODE (second_ior_rhs2) != SSA_NAME
+      || !tree_zero_one_valued_p (second_ior_rhs2))
+    return false;
+
+  /* One of second_ior operands must be LHS (first_ior) and the
+     other operand is going to be swapped later.  */
+  tree first_lhs = gimple_assign_lhs (first_ior);
+  bool swap_second_ior_rhs2;
+  if (gimple_assign_rhs1 (second_ior) == first_lhs)
+    swap_second_ior_rhs2 = true;
+  else if (gimple_assign_rhs2 (second_ior) == first_lhs)
+    swap_second_ior_rhs2 = false;
+  else
+    return false;
+
+  /* The current bb must be a single_pred bb and its predecessor
+     must have a gcond.  */
+  if (!single_pred_p (middle_bb))
+    return false;
+
+  edge e = single_pred_edge (middle_bb);
+  if (!(e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE)))
+    return false;
+
+  basic_block cond_bb = e->src;
+  gsi = gsi_last_bb (cond_bb);
+  gcond *cond = dyn_cast <gcond *> (gsi_stmt (gsi));
+
+  if (!cond
+      || TREE_CODE (gimple_cond_rhs (cond)) != SSA_NAME)
+    return false;
+
+  tree A = gimple_cond_lhs (cond);
+  tree B = gimple_cond_rhs (cond);
+
+  if (A != first_ior_rhs1
+      && A != first_ior_rhs2
+      && A != second_ior_rhs1
+      && A != second_ior_rhs2)
+    return false;
+
+  if (B != first_ior_rhs1
+      && B != first_ior_rhs2
+      && B != second_ior_rhs1
+      && B != second_ior_rhs2)
+    return false;
+
+  /* A and B are already in first_ior, i.e. nothing to do.  */
+  if ((A == first_ior_rhs1 && B == first_ior_rhs2)
+      || (A == first_ior_rhs2 && B == first_ior_rhs1))
+    return false;
+
+  /* At this point we know that we have A, B and the first_ior
+     LHS in the middle of the 2 IOR stmts, and  A and B are not
+     together in first_ior.  Now we need to do is see which RHS
+     from first_ior needs to be  swapped with the non_LHS element
+     from second_ior.  */
+  bool swap_first_ior_rhs2 = first_ior_rhs1 == A || first_ior_rhs1 == B;
+  if (swap_second_ior_rhs2)
+    {
+      /* Swap second_ior_rhs2.  */
+      if (swap_first_ior_rhs2)
+	{
+	  /* Swap first_ior_rhs2 with second_ior_2.  */
+	  gimple_assign_set_rhs2 (first_ior, second_ior_rhs2);
+	  gimple_assign_set_rhs2 (second_ior, first_ior_rhs2);
+	}
+      else
+	{
+	  /* Swap first_ior_rhs1 with second_ior_2.  */
+	  gimple_assign_set_rhs1 (first_ior, second_ior_rhs2);
+	  gimple_assign_set_rhs2 (second_ior, first_ior_rhs1);
+	}
+    }
+  else
+    {
+      /* Swap second_ior_rhs1.  */
+      if (swap_first_ior_rhs2)
+	{
+	  /* Swap first_ior_rhs2 with second_ior_rhs1.  */
+	  gimple_assign_set_rhs2 (first_ior, second_ior_rhs1);
+	  gimple_assign_set_rhs1 (second_ior, first_ior_rhs2);
+	}
+      else
+	{
+	  /* Swap first_ior_rhs1 with second_ior_rhs1.  */
+	  gimple_assign_set_rhs1 (first_ior, second_ior_rhs1);
+	  gimple_assign_set_rhs1 (second_ior, first_ior_rhs1);
+	}
+    }
+
+  update_stmt (first_ior);
+  update_stmt (second_ior);
+
+  if (dump_file && (dump_flags & TDF_DETAILS))
+    fprintf (dump_file,  "Changed order of IOR chain operands.\n");
+
+  return true;
+}
+
 /* Determine whether applying the 2 permutations (mask1 then mask2)
    gives back one of the input.  */
 
@@ -7219,6 +7381,11 @@ pass_forwprop::execute (function *fun)
 			bool folded = match_long_mul (as_a <gassign *> (stmt));
 			if (!folded)
 			  folded = simplify_rotate (&gsi);
+
+			if (!folded
+			    && code == BIT_IOR_EXPR)
+			  folded = reorder_ior_chain (stmt);
+
 			changed |= folded;
 		      }
 		    else if (code == BIT_XOR_EXPR)
