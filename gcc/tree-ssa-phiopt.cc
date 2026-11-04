@@ -1288,6 +1288,170 @@ match_simplify_replacement (basic_block cond_bb, basic_block middle_bb,
   return true;
 }
 
+/* State used by assume_valueize.  gimple_simplify takes plain function
+   pointers as valueization hooks so the assumption has to live in
+   file-scope variables.  */
+static tree phiopt_assumed_name;
+static tree phiopt_assumed_val;
+static hash_map<tree, tree> *phiopt_assumed_map;
+
+/* Valueization hook: pretend phiopt_assumed_name is phiopt_assumed_val and
+   that every name recorded in phiopt_assumed_map has its recorded value.  */
+
+static tree
+phiopt_assume_valueize (tree t)
+{
+  if (TREE_CODE (t) != SSA_NAME)
+    return t;
+  if (t == phiopt_assumed_name)
+    return phiopt_assumed_val;
+  if (tree *p = phiopt_assumed_map->get (t))
+    return *p;
+  return t;
+}
+
+/* Maximum number of statements speculated by assumption_replacement.  */
+#define PHIOPT_ASSUMPTION_MAX_STMTS 3
+
+/*  Handle
+
+      if (x CMP C)           // CMP is == or !=
+	{
+	  MIDDLE_BB: a short chain of cheap, non-trapping statements
+	  res = f (x, ...);
+	}
+      # r = PHI <res (MIDDLE_BB), K (COND_BB)>
+n
+    where on the edge that skips MIDDLE_BB we know x == C, and f (C)
+    folds to the constant K.  Then the PHI is equal to RES on both edges, so
+    the statements of MIDDLE_BB can be executed unconditionally and the
+    branch removed.
+
+    E1 is the edge from COND_BB that skips MIDDLE_BB.  ARG0 is the PHI
+    argument coming from MIDDLE_BB and ARG1 the one on E1.  Only triangles
+    are handled.  Return true if the replacement is done.  */
+
+static bool
+assumption_replacement (basic_block cond_bb, basic_block middle_bb,
+			edge e1, gphi *phi, tree arg0, tree arg1)
+{
+  /* The skipping value must be a constant and the other argument must be
+     computed in MIDDLE_BB.  */
+  if (!CONSTANT_CLASS_P (arg1)
+      || TREE_CODE (arg0) != SSA_NAME
+      || gimple_bb (SSA_NAME_DEF_STMT (arg0)) != middle_bb)
+    return false;
+
+  if (!single_pred_p (middle_bb)
+      || !gimple_seq_empty_p (phi_nodes (middle_bb)))
+    return false;
+
+  gcond *cond = safe_dyn_cast <gcond *> (*gsi_last_bb (cond_bb));
+  if (!cond)
+    return false;
+
+  /* Derive "NAME == CST" on the edge that skips MIDDLE_BB.  */
+  tree name = gimple_cond_lhs (cond);
+  tree cst = gimple_cond_rhs (cond);
+  enum tree_code code = gimple_cond_code (cond);
+  if (TREE_CODE (name) != SSA_NAME
+      || !CONSTANT_CLASS_P (cst)
+      || (code != EQ_EXPR && code != NE_EXPR))
+    return false;
+  bool eq_on_skip
+    = (code == EQ_EXPR) ? (e1->flags & EDGE_TRUE_VALUE) != 0
+			: (e1->flags & EDGE_FALSE_VALUE) != 0;
+  if (!eq_on_skip)
+    return false;
+
+  /* Collect the statements to speculate.  */
+  auto_vec<gimple *, PHIOPT_ASSUMPTION_MAX_STMTS> stmts;
+  for (gimple_stmt_iterator gsi = gsi_start_nondebug_after_labels_bb (middle_bb);
+       !gsi_end_p (gsi); gsi_next_nondebug (&gsi))
+    {
+      gimple *s = gsi_stmt (gsi);
+      if (gimple_code (s) == GIMPLE_PREDICT || gimple_code (s) == GIMPLE_NOP)
+	continue;
+      if (!is_gimple_assign (s)
+	  || gimple_vuse (s)
+	  || gimple_could_trap_p (s)
+	  || gimple_has_side_effects (s)
+	  || TREE_CODE (gimple_assign_lhs (s)) != SSA_NAME
+	  || stmts.length () == PHIOPT_ASSUMPTION_MAX_STMTS)
+	return false;
+      ssa_op_iter it;
+      tree use;
+      FOR_EACH_SSA_TREE_OPERAND (use, s, it, SSA_OP_USE)
+	if (ssa_name_maybe_undef_p (use))
+	  return false;
+      stmts.quick_push (s);
+    }
+  if (stmts.is_empty ())
+    return false;
+
+  /* Evaluate the statements under the assumption.  */
+  hash_map<tree, tree> values;
+  phiopt_assumed_name = name;
+  phiopt_assumed_val = cst;
+  phiopt_assumed_map = &values;
+
+  bool ok = true;
+  for (gimple *s : stmts)
+    {
+      gimple_match_op op;
+      if (!gimple_simplify (s, &op, NULL, phiopt_assume_valueize,
+			    phiopt_assume_valueize))
+	{
+	  ok = false;
+	  break;
+	}
+      tree val = maybe_push_res_to_seq (&op, NULL);
+      if (!val || !CONSTANT_CLASS_P (val))
+	{
+	  ok = false;
+	  break;
+	}
+      values.put (gimple_assign_lhs (s), val);
+    }
+
+  tree *resp = ok ? values.get (arg0) : NULL;
+  phiopt_assumed_name = phiopt_assumed_val = NULL_TREE;
+  phiopt_assumed_map = NULL;
+
+  if (!resp
+      || !types_compatible_p (TREE_TYPE (*resp), TREE_TYPE (arg1))
+      || !operand_equal_p (*resp, arg1, 0))
+    return false;
+
+  if (dump_file && (dump_flags & TDF_DETAILS))
+    {
+      fprintf (dump_file, "assumption replacement: ");
+      print_generic_expr (dump_file, name);
+      fprintf (dump_file, " == ");
+      print_generic_expr (dump_file, cst);
+      fprintf (dump_file, " makes ");
+      print_generic_expr (dump_file, arg0);
+      fprintf (dump_file, " == ");
+      print_generic_expr (dump_file, arg1);
+      fprintf (dump_file, "\n");
+    }
+
+  /* Hoist the statements in front of the condition.  */
+  auto_bitmap exprs_maybe_dce;
+  for (gimple *s : stmts)
+    {
+      /* move_stmt leaves the iterator on the moved statement, so start from
+	 the condition again each time to keep the original order.  */
+      gimple_stmt_iterator gsi = gsi_last_bb (cond_bb);
+      move_stmt (s, &gsi, exprs_maybe_dce);
+    }
+
+  replace_phi_edge_with_variable (cond_bb, e1, phi, arg0, exprs_maybe_dce);
+
+  statistics_counter_event (cfun, "assumption PHI replacement", 1);
+  return true;
+}
+
 /*  The function comparison_combine tries to handle cases like:
     if (a CMP0 b)
       d = a CMP1 b;
@@ -5194,6 +5358,10 @@ pass_phiopt::execute (function *)
 	cfgchanged = true;
       else if (comparison_combine (bb, bb1, bb2, e1, e2, phi,
 				   arg0, arg1, diamond_p))
+	cfgchanged = true;
+      else if (!early_p
+	       && !diamond_p
+	       && assumption_replacement (bb, bb1, e2, phi, arg0, arg1))
 	cfgchanged = true;
       else if (!early_p
 	       && !diamond_p
