@@ -7278,18 +7278,20 @@ DEFINE_INT_AND_FLOAT_ROUND_FN (RINT)
  (ne @X @Y))
 
 /* PR115547:
-   (X ^ Y) & (Z | X | Y) -> (X ^ Y)
+   (X ^ Y) & (Z | X | Y) -> (X ^ Y).  */
+(simplify
+ (bit_and:c (bit_xor:c@0 @X @Y) (bit_ior:c @Y (bit_ior:c @Z @X)))
+  @0)
+
+/* PR115547:
    (X NE Y) & (Z | X | Y) -> (X NE Y)
 
    For X, Y and Z being booleans/zero_one values.  */
-(for op (bit_xor ne)
- (simplify
-  (bit_and:c
-    (op:c@0 zero_one_valued_p@X zero_one_valued_p@Y)
-    (bit_ior:c @Y (bit_ior:c zero_one_valued_p@Z @X)))
-   (if (op == BIT_XOR_EXPR)
-    @0
-   (ne @X @Y))))
+(simplify
+ (bit_and:c
+   (ne:c@0 zero_one_valued_p@X zero_one_valued_p@Y)
+   (bit_ior:c @Y (bit_ior:c zero_one_valued_p@Z @X)))
+  (ne @X @Y))
 
 (simplify
  (convert (cond@0 @1 INTEGER_CST@2 INTEGER_CST@3))

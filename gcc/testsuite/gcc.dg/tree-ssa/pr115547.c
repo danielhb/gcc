@@ -25,7 +25,15 @@ _Bool fn2_alt4 (_Bool a, _Bool b, _Bool c) {
     return (a != c) & (b | a | c);
 }
 
-/* { dg-final { scan-tree-dump-times " \\\^ " 3 "optimized" } } */
+int fn2_alt5 (int a, int b, int c) {
+    return (a ^ c) & (b | c | a);
+}
+
+int fn2_alt6 (int a, int b, int c) {
+    return (a ^ c) & (b | a | c);
+}
+
+/* { dg-final { scan-tree-dump-times " \\\^ " 5 "optimized" } } */
 /* { dg-final { scan-tree-dump-times " != " 3 "optimized" } } */
 /* { dg-final { scan-tree-dump-times " \\\| " 0 "optimized" } } */
 /* { dg-final { scan-tree-dump-times " & " 0 "optimized" } } */
